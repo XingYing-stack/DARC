@@ -11,8 +11,14 @@ echo 'start generate question'
 bash question_generate/question_generate.bash $questioner_model_path 1000 $experiment_name
 echo 'start evaluate generated question'
 bash question_evaluate/evaluate.sh $solver_model_path $experiment_name
-echo 'start upload'
-python question_evaluate/upload.py --repo_name ${experiment_name} --max_score 0.8 --min_score 0.3 --experiment_name ${experiment_name}
+echo 'start dataset build'
+python question_evaluate/upload.py --max_score 0.8 --min_score 0.3 --experiment_name ${experiment_name}
+DATASET_DIR=${STORAGE_PATH}/datasets/${experiment_name}
+if [ ! -d "$DATASET_DIR" ]; then
+    echo "Dataset directory $DATASET_DIR not found. Aborting solver training."
+    exit 1
+fi
+echo "DATASET_DIR: ${DATASET_DIR}"
 echo 'start train'
 
 python3 -m verl.trainer.main \
@@ -21,7 +27,7 @@ python3 -m verl.trainer.main \
     worker.actor.model.model_path=$solver_model_path \
     trainer.experiment_name=${experiment_name} \
     trainer.save_checkpoint_path=${STORAGE_PATH}/models/${experiment_name}/ \
-    data.train_files=${HUGGINGFACENAME}/${experiment_name}@train \
+    data.train_files=${DATASET_DIR} \
     trainer.total_epochs=100 \
     trainer.max_steps=20 \
     data.format_prompt=./examples/format_prompt/solver.jinja \
@@ -29,7 +35,7 @@ python3 -m verl.trainer.main \
     worker.actor.micro_batch_size_per_device_for_update=1 \
     worker.actor.micro_batch_size_per_device_for_experience=1 \
 
-echo "merging model"
+echo ""merging model
 python scripts/model_merger.py --local_dir ${STORAGE_PATH}/models/${experiment_name}/global_step_15/actor
 
 sleep 10

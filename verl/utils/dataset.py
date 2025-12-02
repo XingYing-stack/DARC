@@ -126,7 +126,7 @@ class RLHFDataset(Dataset):
             with open(format_prompt, encoding="utf-8") as f:
                 self.format_prompt = f.read()
 
-        if "questioner_format_with_persona" in self.format_prompt:
+        if self.format_prompt and "questioner_format_with_persona" in self.format_prompt:
             print("load personas")
             personas_dataset = load_dataset("proj-persona/PersonaHub", "math", split="train")
             self.personas = [item['input persona'] for item in personas_dataset]
@@ -135,8 +135,16 @@ class RLHFDataset(Dataset):
             self.dataset = self.dataset.filter(self._filter_overlong_prompts, desc="Filtering overlong prompts")
 
     def _build_messages(self, example: Dict[str, Any]) -> List[Dict[str, Any]]:
-        prompt_str: str = example[self.prompt_key]
-        if "questioner_format_with_persona" in self.format_prompt:
+        prompt_data = example[self.prompt_key]
+        if isinstance(prompt_data, list):
+            if random.random() > 0.99:
+                print('prompt_data', prompt_data)
+            return prompt_data
+        if isinstance(prompt_data, dict):
+            return [prompt_data]
+
+        prompt_str: str = prompt_data
+        if self.format_prompt and "questioner_format_with_persona" in self.format_prompt:
             print("load personas")
             return [
                 {
@@ -164,7 +172,7 @@ class RLHFDataset(Dataset):
                     )
                 }
             ]
-        if "questioner_format" in self.format_prompt:
+        if self.format_prompt and "questioner_format" in self.format_prompt:
             # print('detected questioner_format')
             return [
                 {
@@ -192,7 +200,7 @@ class RLHFDataset(Dataset):
                     )
                 }
             ]
-        if "solver_format" in self.format_prompt:
+        if self.format_prompt and "solver_format" in self.format_prompt:
             return [{"role": "system", "content": r"Please reason step by step, and put your final answer within \boxed{}."},{"role": "user", "content": prompt_str}]
         if self.format_prompt:
             format_prompt = Template(self.format_prompt.strip())
@@ -285,5 +293,9 @@ class RLHFDataset(Dataset):
         example["attention_mask"] = attention_mask
         example["position_ids"] = position_ids
         example["raw_prompt_ids"] = raw_prompt_ids
-        example["ground_truth"] = example.pop(self.answer_key)
+        _gt = example.pop(self.answer_key)
+        if os.getenv("INJECT_EXTRA_INFO_TO_GROUND_TRUTH", "0") == "1":
+            example["ground_truth"] = {"ground_truth": _gt, "extra_info": example.get("extra_info")}
+        else:
+            example["ground_truth"] = _gt
         return example

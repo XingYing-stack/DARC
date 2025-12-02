@@ -1,5 +1,13 @@
-Base_model=$1
-Model_abbr=$2
+# bash scripts/main.sh
+
+export STORAGE_PATH="/share_data/data1/fanshengda/DEvo/ckpts"
+export HUGGINGFACENAME="AnIdealRing"
+export HF_ENDPOINT=https://hf-mirror.com
+export PYTHONPATH=/data3/workhome/fanshengda/DEvo:$PYTHONPATH
+
+
+Base_model="/share_data/data1/models/Qwen/Qwen3-4B-Base"
+Model_abbr="qwen3-4b"
 echo "Model_abbr: $Model_abbr"
 # Initialize first iteration with base model
 bash scripts/questioner_train_penalty.sh  $Base_model $Base_model ${Model_abbr}_questioner_v1

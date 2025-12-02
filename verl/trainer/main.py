@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pydevd_pycharm
 
 import json
 import os
@@ -77,6 +78,17 @@ class Runner:
         RemoteRewardManager = ray.remote(RewardManager).options(num_cpus=config.worker.reward.num_cpus)
         reward_fn = RemoteRewardManager.remote(config.worker.reward, tokenizer)
         val_reward_fn = RemoteRewardManager.remote(config.worker.reward, tokenizer)
+
+        # import os
+        # if os.getenv("VERL_DEBUG_MAIN") == "1":
+        #     import pydevd_pycharm
+        #     pydevd_pycharm.settrace(
+        #         'localhost',
+        #         port=6067,
+        #         stdoutToServer=True,
+        #         stderrToServer=True,
+        #         suspend=False,  # 用断点控制停哪
+        #     )
 
         train_dataloader, val_dataloader = create_dataloader(config.data, tokenizer, processor)
 

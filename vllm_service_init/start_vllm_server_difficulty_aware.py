@@ -33,7 +33,7 @@ parser.add_argument('--port', type=str, default='5000')
 parser.add_argument('--model_path', type=str, default='Qwen/Qwen3-4B-Base')
 parser.add_argument('--gpu_mem_util', type=float, default=0.8,
                     help='The maximum GPU memory utilization fraction for vLLM.')
-parser.add_argument('--max_model_len', type=int, default=32000,
+parser.add_argument('--max_model_len', type=int, default=8192,
                     help='Maximum model sequence length (tokens) for the vLLM engine. Reduce to save KV cache memory.')
 parser.add_argument('--n_candidates', type=int, default=int(os.getenv('VLLM_N_CANDIDATES', '10')),
                     help='Number of candidate answers to sample per question.')
@@ -51,11 +51,17 @@ model = vllm.LLM(
     max_model_len=args.max_model_len,
 )
 
+# Allow overriding solver generation behavior via env to tune difficulty pressure
+solver_temp = float(os.getenv('SOLVER_TEMPERATURE', '1.0'))
+solver_top_p = float(os.getenv('SOLVER_TOP_P', '1.0'))
+solver_top_k = int(os.getenv('SOLVER_TOP_K', '40'))
+solver_max_tokens = int(os.getenv('SOLVER_MAX_TOKENS', '4096'))
+
 sample_params = vllm.SamplingParams(
-    max_tokens=8192,
-    temperature=1.0,
-    top_p=1.0,
-    top_k=40,
+    max_tokens=solver_max_tokens,
+    temperature=solver_temp,
+    top_p=solver_top_p,
+    top_k=solver_top_k,
     stop_token_ids=[tokenizer.eos_token_id],
     n=args.n_candidates, # default 10; reduce via --n_candidates to mitigate timeouts
 )
@@ -163,69 +169,92 @@ def hello():
         responses = []
     print('[server] Generation completed.')
 
-    # ---------- Results Post-Processing (Core Refactoring & Optimization Here) ----------
+    # ---------- Results Post-Processing (Difficulty-Aware: success-rate vs golden) ----------
     def process_single(question, golden_answer, response):
-        '''Consolidates and grades vLLM outputs for a single question, returning a result dictionary.'''
+        '''
+        Consolidates vLLM outputs for a single question and returns a success rate
+        w.r.t. the provided golden_answer. Unlike the legacy flow, we do NOT gate the
+        score on majority-vote equality; instead we compute the fraction of samples
+        equivalent to the golden answer using mathruler with timeouts.
+        '''
+        # Extract boxed content from all candidate outputs
         results = [extract_boxed_content(out.text) for out in response.outputs]
-        # print(f"[process_single] Processing question: '{question[:70]}...'")
+        results = [r for r in results if r]
 
+        # Keep majority computation only for debugging/telemetry
         answer_counts = {}
-        for res in results:
-            if not res: continue # Skip empty results
-            matched = False
-            
-            for exist_ans in list(answer_counts.keys()):
-                # 3. OPTIMIZATION: Perform cheap comparisons first to avoid expensive calls.
-                if res == exist_ans or ('no ' in res.lower() and 'no ' in exist_ans.lower()):
-                    answer_counts[exist_ans] += 1
-                    matched = True
-                    break # Match found, break from the inner loop over exist_ans
-                
-                # 4. If cheap checks fail, proceed to the expensive, timed grade_answer calls.
+        for r in results:
+            if not r:
+                continue
+            matched_to_existing = False
+            for exist in list(answer_counts.keys()):
+                # Cheap string check before expensive calls
+                if r == exist or ('no ' in r.lower() and 'no ' in exist.lower()):
+                    answer_counts[exist] += 1
+                    matched_to_existing = True
+                    break
                 try:
                     is_match = False
-                    # First direction: res vs exist_ans
-                    match_result_1 = grade_answer_with_timeout(res, exist_ans, timeout=10)
-                    if match_result_1 == 'TIMED_OUT':
-                        print(f"      [grader] TIMEOUT comparing '{res[:30]}...' with '{exist_ans[:30]}...'.")
-                    elif match_result_1:
+                    m1 = grade_answer_with_timeout(r, exist, timeout=10)
+                    if m1 == 'TIMED_OUT':
+                        print(f"      [cluster] TIMEOUT '{r[:30]}...' vs '{exist[:30]}...'")
+                    elif m1:
                         is_match = True
-
-                    # Second direction (only if first failed): exist_ans vs res
                     if not is_match:
-                        match_result_2 = grade_answer_with_timeout(exist_ans, res, timeout=10)
-                        if match_result_2 == 'TIMED_OUT':
-                             # Log timeout for the second direction as well
-                            print(f"      [grader] TIMEOUT comparing '{exist_ans[:30]}...' with '{res[:30]}...'. Skipping pair.")
-                        elif match_result_2:
+                        m2 = grade_answer_with_timeout(exist, r, timeout=10)
+                        if m2 == 'TIMED_OUT':
+                            print(f"      [cluster] TIMEOUT '{exist[:30]}...' vs '{r[:30]}...'")
+                        elif m2:
                             is_match = True
-                    
                     if is_match:
-                        answer_counts[exist_ans] += 1
-                        matched = True
-                        break # Match found, break from the inner loop
-
+                        answer_counts[exist] += 1
+                        matched_to_existing = True
+                        break
                 except Exception as e:
-                    # Catch any other potential errors from the grader function itself.
-                    print(f"      [grader] ERROR comparing '{res[:30]}...' with '{exist_ans[:30]}...': {e}. Skipping.")
-                    continue # Continue to the next comparison in the inner loop
-            
-            if not matched:
-                answer_counts[res] = 1
+                    print(f"      [cluster] ERROR comparing '{r[:30]}...' and '{exist[:30]}...': {e}")
+            if not matched_to_existing:
+                answer_counts[r] = 1
 
-        if not answer_counts:
-            majority_ans, max_count = '', 0
-        else:
+        if answer_counts:
             majority_ans = max(answer_counts, key=answer_counts.get)
-            max_count = answer_counts[majority_ans]
+        else:
+            majority_ans = ''
 
-        score = max_count / len(results) if results else 0.0
+        # Compute success rate against golden_answer (the only score used downstream)
+        matches = 0
+        total = len(results)
+        for r in results:
+            if not r:
+                continue
+            matched = False
+            # Cheap equality first
+            if r == golden_answer or ('no ' in r.lower() and 'no ' in golden_answer.lower()):
+                matched = True
+            if not matched:
+                try:
+                    m1 = grade_answer_with_timeout(r, golden_answer, timeout=10)
+                    if m1 == 'TIMED_OUT':
+                        # Try reverse direction when timed out or False
+                        m2 = grade_answer_with_timeout(golden_answer, r, timeout=10)
+                        matched = (m2 != 'TIMED_OUT') and bool(m2)
+                    else:
+                        matched = bool(m1)
+                    if not matched:
+                        # Try reverse direction if the first check was False
+                        m2 = grade_answer_with_timeout(golden_answer, r, timeout=10)
+                        matched = (m2 != 'TIMED_OUT') and bool(m2)
+                except Exception as e:
+                    print(f"      [grader] ERROR comparing to golden: '{r[:30]}...' vs '{golden_answer[:30]}...': {e}")
+            if matched:
+                matches += 1
+
+        success_rate = (matches / total) if total > 0 else 0.0
 
         return {
             'question': question,
-            'answer':   majority_ans,
-            'score':    score if majority_ans == golden_answer and score > 0.1 else 0,
-            'results':  results
+            'answer':   majority_ans,  # keep for debugging
+            'score':    success_rate,  # key change: return success rate w.r.t. golden
+            'results':  results,
         }
 
     results_all = []
@@ -263,16 +292,31 @@ def hello():
 
 @app.route('/related', methods=['GET'])
 def related():
-    '''Judge if question is related to text using the same solver model (simple yes/no).'''
+    '''Judge if question is related to text using the same solver model.
+
+    Input file format (JSON list):
+    [
+      {"text": "...", "question": "..."},
+      ...
+    ]
+
+    Writes a results file with entries:
+    {"text": "...", "question": "...", "related": true/false, "score": 1 or 0}
+    '''
+
+    # Pause idle worker during generation
     pause_event.set()
     torch.cuda.synchronize()
 
     name = request.args.get('name', 'None')
     print(f"[server][related] Received request for task file: {name}")
+
+    # Load data
     with open(name, 'r') as f:
         data = json.load(f)
     os.remove(name)
 
+    # Prepare chats
     chats = []
     items = []
     for item in data:
@@ -291,6 +335,7 @@ def related():
         ])
         items.append({"text": text, "question": question})
 
+    # Build prompts
     if chats:
         if tokenizer.chat_template:
             prompts = [
@@ -306,6 +351,7 @@ def related():
     else:
         prompts = []
 
+    # Generation params for quick yes/no
     sampling_params_related = vllm.SamplingParams(
         max_tokens=8,
         temperature=0.0,
@@ -315,11 +361,13 @@ def related():
         n=1,
     )
 
+    # Generate
     if prompts:
         responses = model.generate(prompts, sampling_params=sampling_params_related, use_tqdm=False)
     else:
         responses = []
 
+    # Parse outputs
     out_items = []
     r_idx = 0
     for base in items:
@@ -330,11 +378,13 @@ def related():
         r_idx += 1
         text_out = resp.outputs[0].text.strip() if resp.outputs else ''
         low = text_out.lower()
+        # robust yes/no parse
         if 'yes' in low and 'no' not in low:
             related_flag = True
         elif 'no' in low and 'yes' not in low:
             related_flag = False
         else:
+            # fallback: prefix token
             related_flag = low.startswith('y') and not low.startswith('n')
         out_items.append({
             "text": base.get('text', ''),

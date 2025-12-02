@@ -457,6 +457,17 @@ class RayPPOTrainer:
         metrics.update(global_balance_stats)
 
     def fit(self):
+
+        import os
+        if os.getenv("VERL_DEBUG_MAIN") == "1":
+            import pydevd_pycharm
+            pydevd_pycharm.settrace(
+                'localhost',
+                port=6067,
+                stdoutToServer=True,
+                stderrToServer=True,
+                suspend=False,  # 用断点控制停哪
+            )
         """
         The training loop of PPO.
         The driver process only need to call the compute functions of the worker group through RPC to construct the PPO dataflow.
@@ -485,7 +496,6 @@ class RayPPOTrainer:
 
                 metrics, timing_raw = {}, {}
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
-
                 # pop those keys for generation
                 if "multi_modal_data" in batch.non_tensor_batch.keys():
                     gen_batch = batch.pop(

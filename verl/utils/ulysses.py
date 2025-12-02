@@ -112,7 +112,7 @@ def _pad_tensor(x: Tensor, dim: int, padding_size: int) -> Tensor:
 def _unpad_tensor(x: Tensor, dim: int, padding_size: int) -> Tensor:
     slc = [slice(None)] * len(x.shape)
     slc[dim] = slice(0, -padding_size)
-    return x[slc]
+    return x[tuple(slc)]
 
 
 def slice_input_tensor(x: Tensor, dim: int, padding: bool = True, group: ProcessGroup = None) -> Tensor:
@@ -259,31 +259,24 @@ def gather_outputs_and_unpad(
     return x
 
 
-def ulysses_pad_and_slice_inputs(
+def ulysses_pad(
     input_ids_rmpad: torch.Tensor, position_ids_rmpad: Optional[torch.Tensor] = None, sp_size: int = 1
 ):
     """
-    Pad and slice input_ids to be divisible by sp_size
-    Pad position_ids to be divisible by sp_size.
+    Pad input_ids and position_ids so that sequence length is divisible by sp_size.
 
-    Note both input_ids_rmpad and position_ids_rmpad will be padded,
-    but only input_ids will be sliced.
-
-    The is the utility of pre-forward for ulysses sequence parallelism
-
-    Args:
-        input_ids_rmpad: shape of [bsz, seqlen]
-        position_ids_rmpad: shape of [bsz, seqlen], where bsz must be 1
-        sp_size (int): ulysses sequence parallelism size
-
-    Returns:
-        torch.Tensor: padded and sliced input_ids
-        torch.Tensor: padded and sliced position_ids
-        int: pad size
+    Supports both 2D position_ids [1, seqlen] and 3D mrope shape [3, 1, seqlen].
     """
     if position_ids_rmpad is not None:
-        assert position_ids_rmpad.size(0) == 1
-        assert input_ids_rmpad.size(1) == position_ids_rmpad.size(1)
+        # allow 2D [1, seqlen] or 3D [3, 1, seqlen]
+        if position_ids_rmpad.dim() == 2:
+            assert position_ids_rmpad.size(0) == 1
+            assert input_ids_rmpad.size(1) == position_ids_rmpad.size(1)
+        elif position_ids_rmpad.dim() == 3:
+            assert position_ids_rmpad.size(-2) == 1
+            assert input_ids_rmpad.size(1) == position_ids_rmpad.size(-1)
+        else:
+            raise AssertionError("position_ids_rmpad must be 2D or 3D")
     if sp_size <= 1:
         return input_ids_rmpad, position_ids_rmpad, 0
     _, total_seq_len = input_ids_rmpad.shape
@@ -292,7 +285,30 @@ def ulysses_pad_and_slice_inputs(
         input_ids_rmpad = torch.nn.functional.pad(input_ids_rmpad, (0, pad_size), value=0)
         if position_ids_rmpad is not None:
             pad_pos_ids = torch.arange(pad_size, device=position_ids_rmpad.device).unsqueeze(0)
+            if position_ids_rmpad.dim() == 3:
+                # expand to [3, 1, pad]
+                pad_pos_ids = pad_pos_ids.unsqueeze(0).repeat(position_ids_rmpad.size(0), 1, 1)
             position_ids_rmpad = torch.cat((position_ids_rmpad, pad_pos_ids), dim=-1)
-    # we don't need to slice position ids
-    input_ids_rmpad = slice_input_tensor(input_ids_rmpad, dim=1, padding=False)
     return input_ids_rmpad, position_ids_rmpad, pad_size
+
+
+def ulysses_pad_and_slice_inputs(
+    input_ids_rmpad: torch.Tensor, position_ids_rmpad: Optional[torch.Tensor] = None, sp_size: int = 1
+):
+    """
+    Pad and slice input_ids/position_ids to be divisible by sp_size.
+
+    Note: both input_ids_rmpad and position_ids_rmpad will be padded and sliced.
+    """
+    input_ids_rmpad, position_ids_rmpad, pad_size = ulysses_pad(input_ids_rmpad, position_ids_rmpad, sp_size)
+    input_ids_rmpad = slice_input_tensor(input_ids_rmpad, dim=1, padding=False)
+    if position_ids_rmpad is not None:
+        position_ids_rmpad = slice_input_tensor(position_ids_rmpad, dim=1, padding=False)
+    return input_ids_rmpad, position_ids_rmpad, pad_size
+
+
+def validate_ulysses_config(num_heads: int, ulysses_sequence_size: int):
+    if ulysses_sequence_size > 1:
+        assert (
+            num_heads % ulysses_sequence_size == 0
+        ), f"num_heads ({num_heads}) must be divisible by ulysses sequence size({ulysses_sequence_size})"
