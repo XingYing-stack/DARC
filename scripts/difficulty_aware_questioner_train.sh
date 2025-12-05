@@ -6,10 +6,11 @@ export HUGGINGFACENAME="AnIdealRing"
 export HF_ENDPOINT=https://hf-mirror.com
 export PYTHONPATH=/data3/workhome/fanshengda/DEvo:$PYTHONPATH
 export INJECT_EXTRA_INFO_TO_GROUND_TRUTH=1
-export VLLM_N_CANDIDATES=32
+export VLLM_N_CANDIDATES=16
 
 
-export ENABLE_DIFFICULTY_RANKING=1
+export ENABLE_DIFFICULTY_RANKING=0
+export DEEPSEEK_MODEL="Qwen3-4B-Instruct-2507"
 export DEEPSEEK_API_URL="http://10.0.1.10:8888/v1"
 export DEEPSEEK_API_KEY="dada"
 
@@ -33,9 +34,9 @@ echo "Start training difficulty_aware questioner: $questioner_model_path -> $sav
 CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m verl.trainer.main \
     config=examples/config.yaml \
     data.max_prompt_length=10000 \
-    data.max_response_length=12000 \
-    data.train_files=/share_data/data1/fanshengda/DEvo/data/challenger_1201 \
-    data.val_files=/share_data/data1/fanshengda/DEvo/data/challenger_1201 \
+    data.max_response_length=8000 \
+    data.train_files=/share_data/data1/fanshengda/DEvo/data/challenger_1204 \
+    data.val_files=/share_data/data1/fanshengda/DEvo/data/challenger_1204 \
     data.shuffle=false \
     data.prompt_key=prompt \
     data.answer_key=reward_model \
@@ -49,8 +50,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m verl.trainer.main \
     trainer.val_freq=-1 \
     trainer.n_gpus_per_node=4 \
     worker.rollout.n=4 \
-    worker.actor.global_batch_size=20 \
-    data.rollout_batch_size=20 \
+    worker.actor.global_batch_size=12 \
+    data.rollout_batch_size=12 \
     worker.actor.ulysses_sequence_parallel_size=2 \
     trainer.max_steps=5000 \
     trainer.save_freq=50 \

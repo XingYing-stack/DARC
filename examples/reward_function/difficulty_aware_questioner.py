@@ -47,7 +47,7 @@ def _parse_target_solver_accuracy() -> Dict[int, float]:
     Format example: "1:0.9,2:0.75,3:0.5,4:0.3,5:0.1"
     Falls back to default if env is not provided or invalid.
     """
-    default = {5: 0.05, 4: 0.1, 3: 0.15, 2: 0.3, 1: 0.5}
+    default = {3: 0.2, 2: 0.5, 1: 0.8}
     env_val = os.getenv("TARGET_SOLVER_ACCURACY", "").strip()
     if not env_val:
         return default
@@ -619,8 +619,8 @@ def compute_score(
     # Optional: add pairwise ranking penalty/bonus within the same document to
     # encourage monotonic ordering of solver success across difficulty levels.
     if os.getenv("ENABLE_DIFFICULTY_RANKING", "1") == "1":
-        margin = float(os.getenv("RANKING_MARGIN", "0.05"))
-        weight = float(os.getenv("RANKING_WEIGHT", "0.2"))
+        margin = float(os.getenv("RANKING_MARGIN", "0.1"))
+        weight = float(os.getenv("RANKING_WEIGHT", "0.5"))
 
         # Build groups: doc_id -> list of (sample_idx, difficulty, solver_score)
         groups: Dict[int, List[Tuple[int, int, float]]] = {}
