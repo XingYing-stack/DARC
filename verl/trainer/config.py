@@ -37,6 +37,11 @@ class DataConfig:
     val_files: str = ""
     prompt_key: str = "prompt"
     answer_key: str = "answer"
+    # Optional per-split overrides (fallback to prompt_key/answer_key when None)
+    train_prompt_key: Optional[str] = None
+    train_answer_key: Optional[str] = None
+    val_prompt_key: Optional[str] = None
+    val_answer_key: Optional[str] = None
     image_key: str = "images"
     max_prompt_length: int = 512
     max_response_length: int = 512
@@ -90,12 +95,20 @@ class TrainerConfig:
     save_limit: int = -1
     save_checkpoint_path: Optional[str] = None
     load_checkpoint_path: Optional[str] = None
+    # Optional rollout dump during training
+    dump_rollout_path: Optional[str] = None
+    dump_rollout_n: int = 0
+    dump_rollout_every: int = 0
 
     def post_init(self):
         if self.save_checkpoint_path is None:
             self.save_checkpoint_path = os.path.join("checkpoints", self.project_name, self.experiment_name)
 
         self.save_checkpoint_path = os.path.abspath(self.save_checkpoint_path)  # ray job uses absolute path
+        # Default dump path co-located with checkpoints if enabled
+        if self.dump_rollout_path is None and self.dump_rollout_n > 0:
+            self.dump_rollout_path = os.path.join(self.save_checkpoint_path, "rollouts.jsonl")
+            self.dump_rollout_path = os.path.abspath(self.dump_rollout_path)
         if self.load_checkpoint_path is not None:
             self.load_checkpoint_path = os.path.abspath(self.load_checkpoint_path)
 

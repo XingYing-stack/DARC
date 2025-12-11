@@ -146,6 +146,70 @@ def generate_results(payload: List[Dict[str, str]]) -> List[Dict[str, float]]:
     return final_results
 
 
+def generate_answers_from_text(payload: List[Dict[str, str]]) -> List[Dict[str, float]]:
+    """Call difficulty-aware vLLM server '/answer' endpoint to compute
+    majority-voted answers using both text and question.
+
+    Each payload item must be {"text": str, "question": str}.
+    Returns each record with at least {"text", "question", "answer", "majority_fraction"}.
+    """
+    if not payload:
+        return []
+
+    shards = split_list(payload, SERVER_COUNT)
+    temp_files = [generate_temp_filename(prefix=f"answer_{i}") for i in range(SERVER_COUNT)]
+    shard_lens = [len(s) for s in shards]
+
+    for path, shard in zip(temp_files, shards):
+        with open(path, "w", encoding="utf-8") as fp:
+            json.dump(shard, fp, ensure_ascii=False)
+
+    def _fetch_answer(port: int, task_file: str) -> bool:
+        last_exc: Optional[Exception] = None
+        for attempt in range(HTTP_RETRIES + 1):
+            try:
+                resp = requests.get(
+                    f"http://0.0.0.0:{port}/answer",
+                    params={"name": task_file},
+                    timeout=HTTP_TIMEOUT,
+                )
+                resp.raise_for_status()
+                return True
+            except Exception as exc:
+                last_exc = exc
+                print(f"[answer] Fetch attempt {attempt+1}/{HTTP_RETRIES+1} failed on port {port} for {task_file}: {exc}")
+                time.sleep(min(5 * (attempt + 1), 30))
+        print(f"[answer] Giving up on port {port} for {task_file}: {last_exc}")
+        return False
+
+    with ThreadPoolExecutor(max_workers=SERVER_COUNT) as executor:
+        futures = [
+            executor.submit(_fetch_answer, SERVER_BASE_PORT + idx, task_file)
+            for idx, task_file in enumerate(temp_files)
+        ]
+        for idx, future in enumerate(as_completed(futures)):
+            ok = future.result()
+            if not ok:
+                print(f"[answer] Shard {idx} request did not succeed; will fill with placeholders if needed.")
+
+    final_results: List[Dict[str, float]] = []
+    for shard_len, path in zip(shard_lens, temp_files):
+        result_path = path.replace(".json", "_results.json")
+        if os.path.exists(result_path):
+            try:
+                with open(result_path, "r", encoding="utf-8") as fp:
+                    final_results.extend(json.load(fp))
+            finally:
+                os.remove(result_path)
+        else:
+            final_results.extend([
+                {"text": "", "question": "", "answer": "", "majority_fraction": 0.0}
+                for _ in range(shard_len)
+            ])
+
+    return final_results
+
+
 def extract_question_and_answer(predict: str) -> Tuple[Optional[str], Optional[str]]:
     """Parse model output as a single strict JSON object (no <think> parsing).
 
@@ -208,6 +272,52 @@ def extract_question_and_answer(predict: str) -> Tuple[Optional[str], Optional[s
         return None, None
 
     return question.strip(), str(answer_val)
+
+
+def extract_question_only(predict: str) -> Optional[str]:
+    """Parse model output as strict JSON (or fenced JSON) and return question only.
+
+    Does not require/validate the 'answer' field. Still validates that top-level
+    keys are exactly the required set for format compliance.
+    """
+    if not isinstance(predict, str):
+        print("[format] Invalid predict type; expected str.")
+        return None
+
+    stripped = predict.strip()
+    m = CODE_FENCE_JSON.match(stripped)
+    if m:
+        json_text = m.group(1).strip()
+    else:
+        if not (stripped.startswith("{") and stripped.endswith("}")):
+            print("[format] Output is not a single JSON object or fenced JSON block.")
+            return None
+        json_text = stripped
+
+    try:
+        payload = json.loads(json_text)
+    except json.JSONDecodeError as e:
+        print(f"[format] JSON parse error: {e}")
+        return None
+
+    required_keys = {
+        "analysis",
+        "question",
+        "intermediate_results",
+        "answer",
+        "solving_time_estimate",
+        "required_concepts",
+        "potential_errors",
+    }
+    if set(payload.keys()) != required_keys:
+        print(f"[format] Invalid JSON keys. got={sorted(list(payload.keys()))}, expected={sorted(list(required_keys))}")
+        return None
+
+    question = payload.get("question")
+    if not isinstance(question, str) or not question.strip():
+        print("[format] 'question' must be a non-empty string.")
+        return None
+    return question.strip()
 
 
 def _coerce_to_python(value):
@@ -288,6 +398,39 @@ def parse_ground_truth(raw_ground_truth) -> Tuple[Optional[int], Optional[str]]:
     return difficulty_id, answer_type
 
 
+def extract_text_from_ground_truth(obj) -> Optional[str]:
+    """Extract a plausible context text from the ground_truth object if present.
+    Looks for common keys like 'text', 'context', 'passage', 'source_text', 'content'.
+    """
+    try:
+        if isinstance(obj, str):
+            obj = json.loads(obj)
+    except Exception:
+        pass
+
+    def _walk(o):
+        if o is None:
+            return None
+        if isinstance(o, dict):
+            for k in ["text", "context", "passage", "source_text", "content"]:
+                if k in o and isinstance(o[k], str) and o[k].strip():
+                    return o[k]
+            for k in ["extra_info", "ground_truth", "meta"]:
+                if k in o:
+                    v = _walk(o[k])
+                    if v:
+                        return v
+            return None
+        if isinstance(o, list):
+            for it in o:
+                v = _walk(it)
+                if v:
+                    return v
+        return None
+
+    return _walk(obj)
+
+
 def validate_answer_type(answer: str, answer_type: Optional[str]) -> bool:
     if not answer_type:
         return True
@@ -320,8 +463,8 @@ def difficulty_reward(solver_score: Optional[float], difficulty_id: Optional[int
         return -1.0
     if difficulty_id not in TARGET_SOLVER_ACCURACY:
         return -1.0
-    if solver_score == 0:
-        return -0.1
+    # if solver_score == 0:
+    #     return -0.1
 
     target = float(TARGET_SOLVER_ACCURACY[difficulty_id])
 
@@ -461,64 +604,76 @@ def compute_score(
     solver_payload: List[Dict[str, str]] = []
     solver_meta: List[Dict[str, int]] = []
 
+    use_text_for_answer = os.getenv("USE_TEXT_SOLVER_FOR_ANSWER", "1") == "1"
+    answer_payload: List[Dict[str, str]] = []
+    answer_meta: List[Dict[str, object]] = []  # index, difficulty_id, answer_type
+
     for idx, predict in enumerate(predicts):
         print(f"predict: {predict}")
-        question, answer = extract_question_and_answer(predict)
-        if question is None or answer is None:
-            continue
+        if use_text_for_answer:
+            question = extract_question_only(predict)
+            if question is None:
+                continue
+            difficulty_id, answer_type = parse_ground_truth(ground_truths[idx])
+            if difficulty_id is None:
+                continue
+            # extract text for answer derivation (may be empty if unavailable)
+            gt_text = extract_text_from_ground_truth(ground_truths[idx]) or ""
+            answer_payload.append({"text": gt_text, "question": question})
+            answer_meta.append({"index": idx, "difficulty_id": difficulty_id, "answer_type": answer_type, "question": question, "text": gt_text})
+            scores[idx] = None  # mark for later fill
+        else:
+            question, answer = extract_question_and_answer(predict)
+            if question is None or answer is None:
+                continue
 
-        difficulty_id, answer_type = parse_ground_truth(ground_truths[idx])
-        if answer_type and not validate_answer_type(answer, answer_type):
-            continue
-        if difficulty_id is None:
-            continue
+            difficulty_id, answer_type = parse_ground_truth(ground_truths[idx])
+            if answer_type and not validate_answer_type(answer, answer_type):
+                continue
+            if difficulty_id is None:
+                continue
 
-        # Normalize answer representation for downstream solver equality checks
-        normalized_answer = answer
-        if answer_type and isinstance(answer_type, str):
-            at = answer_type.lower()
-            if at == "boolean":
-                normalized_answer = answer.lower()
+            # Normalize answer representation for downstream solver equality checks
+            normalized_answer = answer
+            if answer_type and isinstance(answer_type, str):
+                at = answer_type.lower()
+                if at == "boolean":
+                    normalized_answer = answer.lower()
 
-        solver_payload.append({"question": question, "answer": normalized_answer})
-        solver_meta.append({"index": idx, "difficulty_id": difficulty_id})
-        scores[idx] = None  # mark for later fill
+            solver_payload.append({"question": question, "answer": normalized_answer})
+            solver_meta.append({"index": idx, "difficulty_id": difficulty_id})
+            scores[idx] = None  # mark for later fill
+
+    # If using text-based solver to extract an answer, do that first
+    text_answers = []
+    if use_text_for_answer and answer_payload:
+        text_answers = generate_answers_from_text(answer_payload)
+        # Now convert them into solver payload by using the majority-voted answer
+        for meta, ans in zip(answer_meta, text_answers):
+            idx = int(meta["index"])  # type: ignore
+            did = int(meta["difficulty_id"])  # type: ignore
+            atype = meta.get("answer_type")  # Optional[str]
+            maj_ans = (ans.get("answer") or "").strip() if isinstance(ans, dict) else ""
+            # Validate against requested answer_type, if any
+            if atype and not validate_answer_type(maj_ans, atype):
+                # leave INVALID_SCORE
+                continue
+            # boolean normalization consistency
+            normalized_answer = maj_ans
+            if isinstance(atype, str) and atype.lower() == "boolean":
+                normalized_answer = maj_ans.lower()
+            solver_payload.append({
+                "question": str(meta.get("question", "")),
+                "answer": normalized_answer,
+            })
+            solver_meta.append({"index": idx, "difficulty_id": did})
 
     solver_results = generate_results(solver_payload) if solver_payload else []
 
     # relation check payloads
     relation_payload: List[Dict[str, str]] = []
     relation_meta: List[int] = []
-    # try to extract source text from ground_truth if present
-    def _extract_text(obj) -> Optional[str]:
-        try:
-            if isinstance(obj, str):
-                obj = json.loads(obj)
-        except Exception:
-            pass
-        # walk through nested to find a plausible text/context
-        def _walk(o):
-            if o is None:
-                return None
-            if isinstance(o, dict):
-                for k in ["text", "context", "passage", "source_text", "content"]:
-                    if k in o and isinstance(o[k], str) and o[k].strip():
-                        return o[k]
-                # common container keys
-                for k in ["extra_info", "ground_truth", "meta"]:
-                    if k in o:
-                        v = _walk(o[k])
-                        if v:
-                            return v
-                # fallback: none
-                return None
-            if isinstance(o, list):
-                for it in o:
-                    v = _walk(it)
-                    if v:
-                        return v
-            return None
-        return _walk(obj)
+    # try to extract source text from ground_truth if present (for relation judgement)
 
     def _extract_doc_id(obj) -> Optional[int]:
         """Find a stable doc identifier from ground_truth.extra_info (e.g., 'index' or 'doc_id')."""
@@ -568,17 +723,29 @@ def compute_score(
             "accuracy": float(solver_score) if isinstance(solver_score, (int, float)) else 0.0,
         }
         # collect debug info; print later after relation override
-        debug_records.append({
+        debug_rec = {
             "index": idx,
             "question": payload.get("question", ""),
             "answer": payload.get("answer", ""),
             "solver_score": solver_score,
             "difficulty_id": meta.get("difficulty_id"),
             "reward": reward,
-        })
+        }
+        # if we used text-based answers, attach its majority fraction when available
+        if use_text_for_answer and answer_meta:
+            # try to find corresponding majority fraction
+            try:
+                # map by index position in answer_meta
+                for am, an in zip(answer_meta, text_answers):
+                    if int(am["index"]) == idx:
+                        debug_rec["text_majority_fraction"] = float(an.get("majority_fraction", 0.0)) if isinstance(an, dict) else 0.0
+                        break
+            except Exception:
+                pass
+        debug_records.append(debug_rec)
 
         # prepare relation check if source text available
-        gt_text = _extract_text(ground_truths[idx])
+        gt_text = extract_text_from_ground_truth(ground_truths[idx])
         if gt_text and payload.get("question"):
             relation_payload.append({"text": gt_text, "question": payload["question"]})
             relation_meta.append(idx)
@@ -691,9 +858,15 @@ def compute_score(
         ridx = rec["index"]
         is_related = relation_flags.get(ridx, None)
         overall = scores[ridx]["overall"] if 0 <= ridx < len(scores) and isinstance(scores[ridx], dict) else None
+        extra = ''
+        if 'text_majority_fraction' in rec:
+            try:
+                extra = f", text_majority_fraction: {float(rec['text_majority_fraction']):.3f}"
+            except Exception:
+                extra = f", text_majority_fraction: {rec['text_majority_fraction']}"
         print(
             f"question: {rec['question']}, answer: {rec['answer']}, "
             f"solver_score: {rec['solver_score']}, difficulty_id:{rec['difficulty_id']}, "
-            f"difficulty reward: {rec['reward']}, overall: {overall}, related: {is_related}"
+            f"difficulty reward: {rec['reward']}, overall: {overall}, related: {is_related}{extra}"
         )
     return scores

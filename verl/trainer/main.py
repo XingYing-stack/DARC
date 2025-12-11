@@ -125,9 +125,11 @@ def main():
     ppo_config.deep_post_init()
 
     if not ray.is_initialized():
+        # Allow user override of tokenizer parallelism to avoid potential deadlocks
+        tokenizer_parallel = os.environ.get("TOKENIZERS_PARALLELISM", "true")
         runtime_env = {
             "env_vars": {
-                "TOKENIZERS_PARALLELISM": "true",
+                "TOKENIZERS_PARALLELISM": tokenizer_parallel,
                 "NCCL_DEBUG": "WARN",
                 "VLLM_LOGGING_LEVEL": "WARN",
                 "TORCH_NCCL_AVOID_RECORD_STREAMS": "1",

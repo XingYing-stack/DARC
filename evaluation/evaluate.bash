@@ -67,11 +67,11 @@ for MODEL_NAME in "${MODEL_NAMES[@]}"; do
     done
 done
 
-python evaluation/results_recheck.py --model_name $model_name &
-
-python evaluation/eval_supergpqa.py --model_path $model_name
-python evaluation/eval_bbeh.py --model_path $model_name
-python evaluation/eval_mmlupro.py --model_path $model_name
-
-
-echo "==> All tasks have finished!"
+#python evaluation/results_recheck.py --model_name $model_name &
+#
+#python evaluation/eval_supergpqa.py --model_path $model_name
+#python evaluation/eval_bbeh.py --model_path $model_name
+#python evaluation/eval_mmlupro.py --model_path $model_name
+#
+#
+#echo "==> All tasks have finished!"

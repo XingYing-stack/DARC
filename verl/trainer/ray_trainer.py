@@ -18,12 +18,12 @@ This trainer supports model-agonistic model initialization with huggingface
 
 import os
 import uuid
-from collections import defaultdict
+from collections import defaultdict, Counter
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum, auto
 from typing import Any, Dict, List, Optional, Type
-
+import random
 import numpy as np
 import ray
 import torch
@@ -32,12 +32,15 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import PreTrainedTokenizer, ProcessorMixin
 
 from ..protocol import DataProto, pad_dataproto_to_divisor, unpad_dataproto
+from ..utils import torch_functional as VF
+import re
 from ..single_controller.base import Worker
 from ..single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
 from ..single_controller.ray.base import create_colocated_worker_cls
-from ..utils import torch_functional as VF
 from ..utils.checkpoint import CHECKPOINT_TRACKER, remove_obsolete_ckpt
 from ..utils.logger import Tracker
+import json
+from mathruler.grader import extract_boxed_content
 from ..utils.py_functional import convert_dict_to_str, timer
 from ..utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from ..workers.fsdp_workers import FSDPWorker
@@ -217,41 +220,238 @@ class RayPPOTrainer:
         if config.algorithm.adv_estimator not in list(AdvantageEstimator):
             raise NotImplementedError(f"Unknown advantage estimator: {config.algorithm.adv_estimator}.")
 
-        if config.data.rollout_batch_size % config.worker.actor.global_batch_size != 0:
+        # Sanity checks on batch sizes and rollout settings
+        if (
+            self.config.data.rollout_batch_size % self.config.worker.actor.global_batch_size != 0
+        ):
             raise ValueError("Rollout batch size must be divisible by actor global batch size.")
 
         if (
-            config.data.rollout_batch_size * config.worker.rollout.n
-        ) % config.worker.actor.micro_batch_size_per_device_for_experience != 0:
+            self.config.data.rollout_batch_size * self.config.worker.rollout.n
+        ) % self.config.worker.actor.micro_batch_size_per_device_for_experience != 0:
             raise ValueError(
                 "Rollout batch size * rollout.n must be divisible by actor micro batch size for experience."
             )
 
         if self.use_critic:
-            if config.data.rollout_batch_size % config.worker.critic.global_batch_size != 0:
+            if (
+                self.config.data.rollout_batch_size % self.config.worker.critic.global_batch_size != 0
+            ):
                 raise ValueError("Rollout batch size must be divisible by critic global batch size.")
 
             if (
-                config.data.rollout_batch_size * config.worker.rollout.n
-            ) % config.worker.critic.micro_batch_size_per_device_for_experience != 0:
+                self.config.data.rollout_batch_size * self.config.worker.rollout.n
+            ) % self.config.worker.critic.micro_batch_size_per_device_for_experience != 0:
                 raise ValueError(
                     "Rollout batch size * rollout.n must be divisible by critic micro batch size for experience."
                 )
 
         if (
-            config.algorithm.adv_estimator in (AdvantageEstimator.GRPO, AdvantageEstimator.RLOO)
-            and config.worker.rollout.n == 1
+            self.config.algorithm.adv_estimator in (AdvantageEstimator.GRPO, AdvantageEstimator.RLOO)
+            and self.config.worker.rollout.n == 1
         ):
             raise ValueError("GRPO and RLOO algorithm need `config.worker.rollout.n > 1`.")
 
-        if config.trainer.max_steps is not None:
-            self.training_steps = config.trainer.max_steps
+        # Determine training steps
+        if self.config.trainer.max_steps is not None:
+            self.training_steps = self.config.trainer.max_steps
         else:
-            self.training_steps = len(train_dataloader) * config.trainer.total_epochs
+            self.training_steps = len(train_dataloader) * self.config.trainer.total_epochs
 
-        config.worker.actor.optim.training_steps = self.training_steps
-        config.worker.critic.optim.training_steps = self.training_steps
+        self.config.worker.actor.optim.training_steps = self.training_steps
+        self.config.worker.critic.optim.training_steps = self.training_steps
         print(f"Total training steps: {self.training_steps}")
+
+    # ------------------------
+    # Pseudo-label generation
+    # ------------------------
+    def _maybe_label_from_text_prompt(self, batch: DataProto) -> DataProto:
+        """
+        Optionally perform non-symmetric self-distillation by generating labels
+        from a separate text prompt column.
+
+        Controlled by config.worker.reward.reward_function_kwargs, with keys:
+          - solver_label_mode: 'rule' | 'self_vote' | 'auto'
+              'self_vote' -> build label from text_prompt via majority vote
+              'rule'      -> do nothing (use existing ground_truth)
+          - label_prompt_key: dataset column to read prompts from (default 'text_prompt')
+          - label_n: optional int to override sampling n (default rollout.n)
+          - label_temperature/top_p/etc: optional sampling overrides
+        """
+        try:
+            kwargs = getattr(self.config.worker.reward, "reward_function_kwargs", {}) or {}
+            mode = str(kwargs.get("solver_label_mode", os.getenv("SOLVER_LABEL_MODE", "rule"))).lower()
+            if mode not in ("self_vote", "auto"):
+                return batch
+
+            label_prompt_key = str(kwargs.get("label_prompt_key", os.getenv("LABEL_PROMPT_KEY", "text_prompt")))
+            # collect prompts for labeling
+            ntb = batch.non_tensor_batch if batch.non_tensor_batch is not None else {}
+            label_src = ntb.get(label_prompt_key)
+            if label_src is None:
+                return batch
+
+            # normalize to list
+            try:
+                arr = label_src.tolist()
+            except Exception:
+                arr = label_src
+            if not isinstance(arr, (list, np.ndarray)):
+                return batch
+
+            prompts_text: List[str] = []
+            batch_to_label_idx: List[int] = []  # map from batch index -> prompts_text index
+            for bi, msg in enumerate(arr):
+                # msg can be a list[dict] or a str (json)
+                if isinstance(msg, str):
+                    m = msg.strip()
+                    if m.startswith("{") or m.startswith("["):
+                        try:
+                            msg = json.loads(m)
+                        except Exception:
+                            msg = []
+                if not isinstance(msg, list):
+                    continue  # skip samples without a valid chat list
+                if len(msg) == 0:
+                    continue
+                if self.tokenizer.chat_template:
+                    pr = self.tokenizer.apply_chat_template(msg, add_generation_prompt=True, tokenize=False)
+                else:
+                    sys_text = ""
+                    usr_text = ""
+                    for m in msg:
+                        if isinstance(m, dict) and m.get("role") == "system":
+                            sys_text = str(m.get("content", ""))
+                        if isinstance(m, dict) and m.get("role") == "user":
+                            usr_text = str(m.get("content", ""))
+                    pr = "system: " + sys_text + "\n" + "user: " + usr_text
+                prompts_text.append(pr)
+                batch_to_label_idx.append(bi)
+
+            # Tokenize and build DataProto
+            input_ids_list = []
+            attention_mask_list = []
+            position_ids_list = []
+            for pr in prompts_text:
+                model_inputs = self.tokenizer([pr], add_special_tokens=False, return_tensors="pt")
+                input_ids = model_inputs.pop("input_ids")[0]
+                attention_mask = model_inputs.pop("attention_mask")[0]
+                position_ids = torch.clip(attention_mask.cumsum(dim=0) - 1, min=0, max=None)
+                input_ids, attention_mask, position_ids = VF.postprocess_data(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    max_length=self.config.data.max_prompt_length,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    left_pad=True,
+                    truncation="right",
+                )
+                input_ids_list.append(input_ids)
+                attention_mask_list.append(attention_mask)
+                position_ids_list.append(position_ids)
+
+            if len(input_ids_list) == 0:
+                return batch
+
+            input_ids = torch.stack(input_ids_list, dim=0)
+            attention_mask = torch.stack(attention_mask_list, dim=0)
+            position_ids = torch.stack(position_ids_list, dim=0)
+
+            label_batch = DataProto.from_single_dict({
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "position_ids": position_ids,
+                "raw_prompt_ids": np.array([self.tokenizer.encode(pr, add_special_tokens=False)[: self.config.data.max_prompt_length] for pr in prompts_text], dtype=object),
+            })
+            # set rollout overrides if needed (reuse default n)
+            label_batch.meta_info.update({
+                "min_pixels": self.config.data.min_pixels,
+                "max_pixels": self.config.data.max_pixels,
+            })
+            # sampling overrides
+            try:
+                label_n = int(kwargs.get("label_n", os.getenv("LABEL_N", "0")))
+            except Exception:
+                label_n = 0
+            if label_n and label_n > 0:
+                label_batch.meta_info["n"] = label_n
+            # optional overrides
+            for k in ["temperature", "top_p", "top_k"]:
+                v = kwargs.get(f"label_{k}", os.getenv(f"LABEL_{k.upper()}", None))
+                if v is not None:
+                    try:
+                        label_batch.meta_info[k] = type(getattr(self.config.worker.rollout, k))(v) if hasattr(self.config.worker.rollout, k) else float(v)
+                    except Exception:
+                        pass
+            label_batch, pad_size = pad_dataproto_to_divisor(label_batch, self.actor_rollout_wg.world_size)
+            label_out = self.actor_rollout_wg.generate_sequences(label_batch)
+            label_out = unpad_dataproto(label_out, pad_size=pad_size)
+
+            # Decode and majority vote per original sample
+            resp_ids = label_out.batch["responses"]  # shape: [m*n, L]
+            total = resp_ids.shape[0]
+            m = len(prompts_text)
+            # infer n from ratio
+            n = max(total // max(m, 1), 1)
+
+            def _extract_answer(txt: str) -> str:
+                try:
+                    ans = extract_boxed_content(txt)
+                    if isinstance(ans, str) and ans.strip():
+                        return ans.strip()
+                except Exception:
+                    pass
+                pat = re.compile(r"\\boxed\{(.*?)\}")
+                mm = list(pat.finditer(txt))
+                if mm:
+                    return mm[-1].group(1).strip()
+                return ""
+
+            answers_per_item: List[str] = [""] * m
+            for idx in range(m):
+                group = resp_ids[idx * n : (idx + 1) * n]
+                texts = [self.tokenizer.decode(t.tolist(), skip_special_tokens=True) for t in group]
+                ans = [_extract_answer(t) for t in texts]
+                cnt = Counter(a for a in ans if a)
+                if not cnt:
+                    answers_per_item[idx] = ""
+                else:
+                    top = cnt.most_common()
+                    winners = {a for a, c in top if c == top[0][1]}
+                    chosen = ""
+                    for a in ans:
+                        if a in winners:
+                            chosen = a
+                            break
+                    answers_per_item[idx] = chosen
+
+            # Write back into ground_truth as rule gold
+            gts = ntb.get("ground_truth")
+            if gts is not None:
+                new_gts = gts.copy()
+                for local_idx, ans in enumerate(answers_per_item):
+                    bi = batch_to_label_idx[local_idx]
+                    try:
+                        item = new_gts[bi]
+                        if isinstance(item, dict):
+                            # preserve extra fields (e.g., extra_info), force style to rule
+                            item = item.copy()
+                            item["ground_truth"] = str(ans)
+                            item["style"] = "rule"
+                            new_gts[bi] = item
+                        else:
+                            new_gts[bi] = str(ans)
+                    except Exception:
+                        new_gts[bi] = str(ans)
+                batch.non_tensor_batch["ground_truth"] = new_gts
+
+                if random.random() > 0.99:
+                    print('batch.non_tensor_batch:', batch.non_tensor_batch)
+
+        except Exception as e:
+            # be robust; on failure, leave ground_truth unchanged
+            print(f"[warn] self-vote text_prompt labeling failed: {e}")
+        return batch
 
     def _maybe_log_val_generations(
         self, inputs: List[str], outputs: List[str], labels: List[str], scores: List[float]
@@ -532,6 +732,9 @@ class RayPPOTrainer:
                             batch.batch["reward_baselines"] = reward_baseline_tensor
                             del gen_baseline_batch, gen_baseline_output
 
+                    # Non-symmetric distillation: label from text_prompt if requested
+                    batch = self._maybe_label_from_text_prompt(batch)
+
                     batch.non_tensor_batch["uid"] = np.array(
                         [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
                     )
@@ -591,6 +794,13 @@ class RayPPOTrainer:
                             lam=self.config.algorithm.lam,
                         )
 
+                    # Optionally dump rollout samples for debugging
+                    try:
+                        self._maybe_dump_rollouts(batch)
+                    except Exception as _dump_exc:
+                        # be robust; don't crash training due to dump errors
+                        print(f"[warn] dump_rollouts failed at step {self.global_step}: {_dump_exc}")
+
                     # update critic
                     if self.use_critic:
                         with timer("update_critic", timing_raw):
@@ -644,3 +854,69 @@ class RayPPOTrainer:
 
         if self.config.trainer.save_freq <= 0 or self.global_step % self.config.trainer.save_freq != 0:
             self._save_checkpoint()
+
+    def _maybe_dump_rollouts(self, batch: DataProto) -> None:
+        cfg = self.config.trainer
+        n = int(getattr(cfg, "dump_rollout_n", 0) or 0)
+        if n <= 0:
+            return
+        every = int(getattr(cfg, "dump_rollout_every", 0) or 0)
+        if every > 0 and (self.global_step % every) != 0:
+            return
+
+        path = getattr(cfg, "dump_rollout_path", None)
+        if not path:
+            return
+
+        # Collect data
+        prompts = batch.batch.get("prompts")
+        responses = batch.batch.get("responses")
+        if prompts is None or responses is None:
+            return
+
+        # Optional fields
+        uids = batch.non_tensor_batch.get("uid") if batch.non_tensor_batch is not None else None
+        gts = batch.non_tensor_batch.get("ground_truth") if batch.non_tensor_batch is not None else None
+        token_scores = batch.batch.get("token_level_scores")
+
+        bs = prompts.shape[0]
+        limit = min(bs, n)
+
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            for i in range(limit):
+                pr_ids = prompts[i].tolist()
+                rs_ids = responses[i].tolist()
+                pr_txt = self.tokenizer.decode(pr_ids, skip_special_tokens=True)
+                rs_txt = self.tokenizer.decode(rs_ids, skip_special_tokens=True)
+                uid = None
+                if uids is not None:
+                    try:
+                        uid = str(uids[i])
+                    except Exception:
+                        uid = None
+                gt_val = None
+                if gts is not None:
+                    try:
+                        gt_val = gts[i]
+                        # best-effort to keep it JSON-serializable
+                        if hasattr(gt_val, "item"):
+                            gt_val = gt_val.item()
+                    except Exception:
+                        gt_val = None
+                reward_sum = None
+                if token_scores is not None:
+                    try:
+                        reward_sum = float(token_scores[i].sum().item())
+                    except Exception:
+                        reward_sum = None
+
+                record = {
+                    "step": int(self.global_step),
+                    "uid": uid,
+                    "prompt": pr_txt,
+                    "response": rs_txt,
+                    "ground_truth": gt_val,
+                    "reward_sum": reward_sum,
+                }
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")

@@ -3,7 +3,7 @@ questioner_model_path=$2
 experiment_name=$3
 
 echo $STORAGE_PATH
-
+export TOKENIZERS_PARALLELISM=false
 echo "start train solver $experiment_name $solver_model_path $questioner_model_path" 
 
 export VLLM_DISABLE_COMPILE_CACHE=1

@@ -164,13 +164,13 @@ def process_one(idx, text, client, model):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--parquet_path", type=str, default="/share_data/data1/fanshengda/DEvo/data/part_000000.parquet", help="输入 parquet 路径")
-    parser.add_argument("--output_path", type=str, default="/share_data/data1/fanshengda/DEvo/data/filter1202.parquet", help="过滤后输出 parquet 路径")
-    parser.add_argument("--api_key", type=str, default="sk-abHpUvVt7LLnmEyxCe17021d8e774e97Bd7aA9Bc4f2b1076", help="OpenAI API key")
+    parser.add_argument("--parquet_path", type=str, default="/share_data/data1/fanshengda/DEvo/data/shard_00000000_processed.jsonl", help="输入 parquet 路径")
+    parser.add_argument("--output_path", type=str, default="/share_data/data1/fanshengda/DEvo/data/general_filter1212.parquet", help="过滤后输出 parquet 路径")
+    parser.add_argument("--api_key", type=str, default="sk-kuFDU3HN9ni5EuDj6f23Ff355a0841Fb856eC63eCd27D947", help="OpenAI API key")
     parser.add_argument("--base_url", type=str, default="https://toollearning.cn/v1", help="OpenAI base URL，例如 https://api.openai.com/v1 或你的自定义网关")
     parser.add_argument("--model", type=str, default="kimi-k2-instruct-0905", help="用于过滤的模型名称")
     parser.add_argument("--text_column", type=str, default="text", help="存放文档内容的列名")
-    parser.add_argument("--batch_limit", type=int, default=10000, help="仅调试用，限制最多处理多少行")
+    parser.add_argument("--batch_limit", type=int, default=1500, help="仅调试用，限制最多处理多少行")
     parser.add_argument("--num_workers", type=int, default=32, help="并发线程数")
     args = parser.parse_args()
 
@@ -182,17 +182,25 @@ def main():
     )
 
     # 读 parquet
-    df = pd.read_parquet(args.parquet_path)
+    if 'parquet' in args.parquet_path.lower():
+        df = pd.read_parquet(args.parquet_path)
+    else:
+        df = pd.read_json(args.parquet_path, lines=True)
     if args.text_column not in df.columns:
         raise ValueError(f"text_column '{args.text_column}' not found in dataframe columns: {df.columns.tolist()}")
 
     if args.batch_limit is not None:
-        df = df.head(args.batch_limit)
+        # df = df.head(args.batch_limit)
+        start = 32000
+        end = 32000 + args.batch_limit
+        df = df.iloc[start:end]
 
     # 准备任务列表
     tasks = []
     for idx, row in df.iterrows():
         text = str(row[args.text_column])
+        text = text[:15000]
+        # 截断字符串，避免爆长度
         tasks.append((idx, text))
 
     results_dict = {}  # idx -> (accepted, decision)

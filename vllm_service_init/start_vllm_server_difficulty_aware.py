@@ -66,6 +66,21 @@ sample_params = vllm.SamplingParams(
     n=args.n_candidates, # default 10; reduce via --n_candidates to mitigate timeouts
 )
 
+# ------------- Debug helpers ------------- #
+def _trunc(obj, n: int = 120) -> str:
+    try:
+        s = str(obj)
+    except Exception:
+        s = repr(obj)
+    return s if len(s) <= n else s[:n] + '...'
+
+def _top_counts(d: dict, k: int = 3):
+    try:
+        items = sorted(d.items(), key=lambda x: x[1], reverse=True)[:k]
+        return [( _trunc(ans, 60), cnt) for ans, cnt in items]
+    except Exception:
+        return []
+
 # ---------------------- GPU Idle Utilization Thread ---------------------- #
 # (This section remains unchanged)
 stop_event = threading.Event()    # Event to stop the thread globally
@@ -149,6 +164,12 @@ def hello():
                 {'role': 'user',   'content': q}
             ])
     print('[server] Valid chat prompts have been prepared.')
+    print('[server] Gen config:',
+          f"n_candidates={sample_params.n}",
+          f"temp={sample_params.temperature}",
+          f"top_p={sample_params.top_p}",
+          f"top_k={sample_params.top_k}",
+          f"max_tokens={sample_params.max_tokens}")
 
     # ---------- vLLM Generation ----------
     # (vLLM generation logic remains unchanged)
@@ -164,7 +185,10 @@ def hello():
                 'system: ' + chat[0]['content'] + '\n' + 'user: ' + chat[1]['content']
                 for chat in valid_chats
             ]
+        t0 = time.time()
         responses = model.generate(prompts, sampling_params=sample_params, use_tqdm=True)
+        dt = time.time() - t0
+        print(f"[server] Generation took {dt:.2f}s for {len(prompts)} prompts.")
     else:
         responses = []
     print('[server] Generation completed.')
@@ -217,8 +241,10 @@ def hello():
 
         if answer_counts:
             majority_ans = max(answer_counts, key=answer_counts.get)
+            majority_count = answer_counts[majority_ans]
         else:
             majority_ans = ''
+            majority_count = 0
 
         # Compute success rate against golden_answer (the only score used downstream)
         matches = 0
@@ -249,10 +275,19 @@ def hello():
                 matches += 1
 
         success_rate = (matches / total) if total > 0 else 0.0
+        majority_fraction = (majority_count / total) if total > 0 else 0.0
+
+        # Debug summary prints
+        print('  [post] question=', _trunc(question, 300))
+        print('  [post] golden =', _trunc(golden_answer, 100))
+        print('  [post] results=', len(results), 'cands; top counts=', _top_counts(answer_counts))
+        print('  [post] majority=', _trunc(majority_ans), f'(frac={majority_fraction:.3f})')
+        print('  [post] success =', f"{matches}/{total}", f"rate={success_rate:.3f}")
 
         return {
             'question': question,
             'answer':   majority_ans,  # keep for debugging
+            'majority_fraction': majority_fraction,
             'score':    success_rate,  # key change: return success rate w.r.t. golden
             'results':  results,
         }
@@ -288,6 +323,169 @@ def hello():
     # --- Resume the GPU idle worker ---
     pause_event.clear()
     print(f'[server] Processed {name}, results saved to {out_path}. Resuming idle worker.')
+    return jsonify({'message': f'Processed {name}, results saved to {out_path}.'})
+
+@app.route('/answer', methods=['GET'])
+def answer_from_text():
+    '''
+    Answer extraction endpoint: given a list of {text, question},
+    generate multiple candidate answers with vLLM, cluster by semantic
+    equality (mathruler.grade_answer), and return the majority-voted
+    answer and its fraction among candidates. No grading against any
+    golden answer is performed here.
+
+    Input file format (JSON list):
+    [
+      {"text": "...", "question": "..."},
+      ...
+    ]
+
+    Output file entries:
+    {
+      "text": "...", "question": "...",
+      "answer": "...", "majority_fraction": 0.0..1.0,
+      "results": ["...", ...]
+    }
+    '''
+
+    # Pause idle worker during generation
+    pause_event.set()
+    torch.cuda.synchronize()
+
+    name = request.args.get('name', 'None')
+    print(f"[server][answer] Received request for task file: {name}")
+
+    # Load data
+    with open(name, 'r') as f:
+        data = json.load(f)
+    os.remove(name)
+
+    # Prepare chats combining text + question
+    valid_items = []
+    chats = []
+    for item in data:
+        txt = (item.get('text') or '').strip()
+        q = (item.get('question') or '').strip()
+        if not q:
+            valid_items.append({
+                'text': txt, 'question': q,
+                'answer': '', 'majority_fraction': 0.0, 'results': []
+            })
+            continue
+        user_content = (
+            "Read the following context and answer the question.\n\n"
+            f"Context:\n{txt}\n\n"
+            f"Question: {q}"
+        )
+        chats.append([
+            {'role': 'system', 'content': 'Please reason step by step, and put your final answer within \\boxed{}.'},
+            {'role': 'user',   'content': user_content},
+        ])
+        valid_items.append({'text': txt, 'question': q})
+
+    # Build prompts
+    if chats:
+        if tokenizer.chat_template:
+            prompts = [
+                tokenizer.apply_chat_template(chat, tokenize=False,
+                                              add_generation_prompt=True, add_special_tokens=True)
+                for chat in chats
+            ]
+        else:
+            prompts = [
+                'system: ' + chat[0]['content'] + '\n' + 'user: ' + chat[1]['content']
+                for chat in chats
+            ]
+    else:
+        prompts = []
+
+    # Generate
+    if prompts:
+        print('[server][answer] Gen config:',
+              f"n_candidates={sample_params.n}",
+              f"temp={sample_params.temperature}",
+              f"top_p={sample_params.top_p}",
+              f"top_k={sample_params.top_k}",
+              f"max_tokens={sample_params.max_tokens}")
+        t0 = time.time()
+        responses = model.generate(prompts, sampling_params=sample_params, use_tqdm=False)
+        dt = time.time() - t0
+        print(f"[server][answer] Generation took {dt:.2f}s for {len(prompts)} prompts.")
+    else:
+        responses = []
+
+    # Post-process each item
+    out_items = []
+    r_idx = 0
+    for base in valid_items:
+        if 'answer' in base:
+            # Already filled placeholder for invalid question
+            out_items.append(base)
+            continue
+        resp = responses[r_idx]
+        r_idx += 1
+        # Collect boxed results
+        cand = [extract_boxed_content(out.text) for out in resp.outputs]
+        cand = [c for c in cand if c]
+        answer_counts = {}
+        for res in cand:
+            if not res:
+                continue
+            matched = False
+            for exist in list(answer_counts.keys()):
+                # cheap equality first
+                if res == exist or ('no ' in res.lower() and 'no ' in exist.lower()):
+                    answer_counts[exist] += 1
+                    matched = True
+                    break
+                try:
+                    is_match = False
+                    m1 = grade_answer_with_timeout(res, exist, timeout=10)
+                    if m1 == 'TIMED_OUT':
+                        pass
+                    elif m1:
+                        is_match = True
+                    if not is_match:
+                        m2 = grade_answer_with_timeout(exist, res, timeout=10)
+                        if m2 == 'TIMED_OUT':
+                            pass
+                        elif m2:
+                            is_match = True
+                    if is_match:
+                        answer_counts[exist] += 1
+                        matched = True
+                        break
+                except Exception as e:
+                    print(f"      [answer][cluster] ERROR comparing '{res[:30]}...' and '{exist[:30]}...': {e}")
+            if not matched:
+                answer_counts[res] = 1
+
+        if answer_counts:
+            majority_ans = max(answer_counts, key=answer_counts.get)
+            majority_count = answer_counts[majority_ans]
+        else:
+            majority_ans = ''
+            majority_count = 0
+        total = len(cand)
+        majority_fraction = (majority_count / total) if total > 0 else 0.0
+        print('  [answer] question=', _trunc(base.get('question', ''), 100))
+        print('  [answer] ctx.len =', len(base.get('text', '') or ''))
+        print('  [answer] results =', total, 'cands; top counts=', _top_counts(answer_counts))
+        print('  [answer] majority =', _trunc(majority_ans), f'(frac={majority_fraction:.3f})')
+        out_items.append({
+            'text': base.get('text', ''),
+            'question': base.get('question', ''),
+            'answer': majority_ans,
+            'majority_fraction': majority_fraction,
+            'results': cand,
+        })
+
+    out_path = name.replace('.json', '_results.json')
+    with open(out_path, 'w') as f:
+        json.dump(out_items, f, indent=2)
+
+    pause_event.clear()
+    print(f"[server][answer] Processed {name}, results saved to {out_path}. Resuming idle worker.")
     return jsonify({'message': f'Processed {name}, results saved to {out_path}.'})
 
 @app.route('/related', methods=['GET'])

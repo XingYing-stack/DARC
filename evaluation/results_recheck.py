@@ -12,8 +12,8 @@ parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-7B-Instruct"
 args = parser.parse_args()
 
 STORAGE_PATH = os.getenv("STORAGE_PATH")
-api_urls = []
-api_keys=[]
+api_urls = ["https://toollearning.cn/v1"]
+api_keys=["sk-abHpUvVt7LLnmEyxCe17021d8e774e97Bd7aA9Bc4f2b1076"]
 
 
 
@@ -67,8 +67,3 @@ for model_name in [args.model_name]:
                 'score': round(sum([result['score'] for result in results[:-1]])/len(results[:-1])*100, 2)
             }, f)
             f.write('\n')
-
-
-
-
-
