@@ -222,7 +222,7 @@ Minutes required.
 '''
 
 
-def _gen_single_item(text: str, idx: int, difficulty_id: int, answer_type: str):
+def _gen_single_item(text: str, idx: int, difficulty_id: int, answer_type: str, type: str):
     """构造一条样本（给定 text/doc 与目标难度/答案类型）。"""
     # Map numeric difficulty id to label used in the prompt
     id2level = {1: 'Easy', 2: 'Moderate', 3: 'Hard'}
@@ -242,7 +242,7 @@ def _gen_single_item(text: str, idx: int, difficulty_id: int, answer_type: str):
                 "content": question,
             }
         ],
-        "ability": "math",
+        "ability": type,
         "reward_model": {"style": "rule", "ground_truth": difficulty_id},
         "extra_info": {
             "split": "train",
@@ -283,7 +283,15 @@ def process_batch_fn(batch, indices, difficulties=(1, 2, 3), k_per_doc=None, int
 
         for d in sorted(diffs):
             answer_type = "integer" if random.random() < int_ratio else "float"
-            item = _gen_single_item(text=text, idx=doc_idx, difficulty_id=d, answer_type=answer_type)
+
+
+            # NOTE : hard code判类别
+
+            if batch['language_id_whole_page_fasttext'][i] is None:
+                type = 'math'
+            else:
+                type = 'general'
+            item = _gen_single_item(text=text, idx=doc_idx, difficulty_id=d, answer_type=answer_type, type=type)
             for k in out.keys():
                 out[k].append(item[k])
 
@@ -294,12 +302,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--local_dataset_path",
-        default="/share_data/data1/fanshengda/DEvo/data/filter1202.parquet",
+        default="/share_data/data1/fanshengda/DEvo/data/all_filter1212.parquet",
         help="The local path to the raw dataset, if it exists.",
     )
     parser.add_argument(
         "--local_save_dir",
-        default="/share_data/data1/fanshengda/DEvo/data/challenger_1207",
+        default="/share_data/data1/fanshengda/DEvo/data/challenger_1212",
         help="The save directory for the preprocessed dataset.",
     )
     parser.add_argument(
@@ -323,7 +331,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # 1. 读原始 parquet，用 pandas -> HF Dataset
-    df = pd.read_parquet(args.local_dataset_path).head(10000)
+    df = pd.read_parquet(args.local_dataset_path).head(20000)
     dataset = Dataset.from_pandas(df)
     dataset = dataset.shuffle(seed=42)
 
