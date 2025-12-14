@@ -1,5 +1,5 @@
 
-# nohup bash scripts/difficulty_aware_solver_train.sh /share_data/data1/models/Qwen/Qwen3-4B-Base /share_data/data1/fanshengda/DEvo/data/solver_1208/solver_questioner_300_train.parquet qwen3-4b-difficulty_aware_solver_1209 > /data3/workhome/fanshengda/DEvo/logs/difficulty_aware_solver_train_1209.log 2>&1 &
+# nohup bash scripts/difficulty_aware_solver_train.sh /share_data/data1/models/Qwen/Qwen3-4B-Base /share_data/data1/fanshengda/DEvo/data/solver_1212/solver_questioner_300_train.parquet qwen3-4b-difficulty_aware_solver_1214 > /data3/workhome/fanshengda/DEvo/logs/difficulty_aware_solver_train_1214.log 2>&1 &
 
 
 
@@ -33,14 +33,15 @@ python3 -m verl.trainer.main \
     worker.actor.model.model_path=$solver_model_path \
     trainer.experiment_name=${experiment_name} \
     trainer.save_checkpoint_path=${STORAGE_PATH}/models/${experiment_name}/ \
-    trainer.total_epochs=100 \
-    trainer.max_steps=300 \
+    trainer.total_epochs=1 \
+    trainer.max_steps=1000 \
     data.format_prompt=./examples/format_prompt/solver.jinja \
     data.train_prompt_key=prompt\
     data.train_answer_key=reward_model \
     data.val_prompt_key=problem \
     data.val_answer_key=answer \
     trainer.val_freq=4 \
+    trainer.save_freq=4 \
     worker.actor.micro_batch_size_per_device_for_update=1 \
     worker.actor.micro_batch_size_per_device_for_experience=1 \
     worker.reward.reward_function=./examples/reward_function/difficulty_aware_solver.py:compute_score \

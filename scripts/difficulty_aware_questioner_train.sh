@@ -10,9 +10,9 @@ export VLLM_N_CANDIDATES=10
 export USE_TEXT_SOLVER_FOR_ANSWER=1
 
 export ENABLE_DIFFICULTY_RANKING=0
-export DEEPSEEK_MODEL="Qwen3-4B-Instruct-2507"
-export DEEPSEEK_API_URL="http://10.0.1.9:8888/v1"
-export DEEPSEEK_API_KEY="dada"
+export DEEPSEEK_MODEL="gpt-5-mini"
+export DEEPSEEK_API_URL="https://toollearning.cn/v1"
+export DEEPSEEK_API_KEY="sk-abHpUvVt7LLnmEyxCe17021d8e774e97Bd7aA9Bc4f2b1076"
 
 solver_model_path=$1
 questioner_model_path=$2
@@ -34,7 +34,7 @@ echo "Start training difficulty_aware questioner: $questioner_model_path -> $sav
 CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m verl.trainer.main \
     config=examples/config.yaml \
     data.max_prompt_length=10000 \
-    data.max_response_length=8000 \
+    data.max_response_length=3000 \
     data.train_files=/share_data/data1/fanshengda/DEvo/data/challenger_1212 \
     data.val_files=/share_data/data1/fanshengda/DEvo/data/challenger_1212 \
     data.shuffle=false \
@@ -51,8 +51,10 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m verl.trainer.main \
     trainer.n_gpus_per_node=4 \
     worker.rollout.n=8 \
     worker.actor.global_batch_size=16 \
+    worker.actor.offload.offload_params=true \
+    worker.actor.offload.offload_optimizer=true \
     data.rollout_batch_size=16 \
-    worker.actor.ulysses_sequence_parallel_size=2 \
+    worker.actor.ulysses_sequence_parallel_size=4 \
     trainer.max_steps=5000 \
     trainer.save_freq=50 \
     trainer.val_before_train=false

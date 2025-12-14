@@ -40,6 +40,25 @@ def process_one(idx, messages, client: OpenAI, model_name: str):
 
 
 def _gen_single_item(idx, sample):
+    # print(sample['question'])
+    assert 'text' in sample
+    assert 'answer' in sample
+    assert len(sample['text']) > 0
+
+    assert isinstance(sample, dict)
+    for k in ["text", "question", "answer"]:
+        assert k in sample, f"missing key: {k}"
+
+    assert isinstance(sample["text"], str), \
+        f"text must be str, got {type(sample['text'])}"
+
+    if isinstance(sample["question"], list) or isinstance(sample["question"], tuple):
+        assert len(sample["question"]) == 1
+        sample["question"] = sample["question"][0]
+
+    assert isinstance(sample["question"], str), \
+        f"question must be str, got {type(sample['question'])}"
+
     return {
         "data_source": "solver",
         "prompt":  [
@@ -57,9 +76,9 @@ def _gen_single_item(idx, sample):
             "split": "train",
             "index": idx,
             "text": sample['text'],
-            "analysis": str(sample['analysis']),
-            'difficulty_id': sample['difficulty_id'],
-            'solving_time_estimate':sample['solving_time_estimate'],
+            # "analysis": str(sample['analysis']),
+            # 'difficulty_id': sample['difficulty_id'],
+            # 'solving_time_estimate':sample['solving_time_estimate'],
         },
     }
 
@@ -70,26 +89,26 @@ def _gen_single_item(idx, sample):
 # CUDA_VISIBLE_DEVICES=4,5,6,7 vllm serve /share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_questioner_1207/global_step_300/actor/huggingface --served-model-name questioner --max-model-len=32768 --tensor-parallel-size 4 --port 6000 --api-key dada --gpu-memory-utilization 0.9 --disable_cascade_attn
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="Qwen3-4B-Instruct-2507")
+    parser.add_argument("--model", type=str, default="questioner")
     parser.add_argument("--api_key", type=str, default="dada")
-    parser.add_argument("--base_url", type=str, default="http://127.0.0.1:6001/v1")
+    parser.add_argument("--base_url", type=str, default="http://127.0.0.1:6000/v1")
 
     parser.add_argument(
         "--save_path",
         type=str,
-        default="/share_data/data1/fanshengda/DEvo/data/solver_1208/qestioner_300_train.parquet",
+        default="/share_data/data1/fanshengda/DEvo/data/solver_1212/qestioner_300_train.parquet",
         help="输出 parquet 路径",
     )
     parser.add_argument(
         "--solver_save_path",
         type=str,
-        default="/share_data/data1/fanshengda/DEvo/data/solver_1208/solver_questioner_300_train.parquet",
+        default="/share_data/data1/fanshengda/DEvo/data/solver_1212/solver_questioner_300_train.parquet",
         help="输出 parquet 路径",
     )
     parser.add_argument(
         "--parquet_path",
         type=str,
-        default="/share_data/data1/fanshengda/DEvo/data/challenger_1207/train.parquet",
+        default="/share_data/data1/fanshengda/DEvo/data/challenger_1212/train.parquet",
         help="输入 parquet 路径",
     )
     parser.add_argument(
@@ -107,64 +126,66 @@ if __name__ == "__main__":
         base_url=args.base_url,
     )
 
-    # # 读 parquet
-    # df = pd.read_parquet(args.parquet_path)
-    # if "prompt" not in df.columns:
-    #     raise ValueError(
-    #         f"'prompt' column not found in dataframe columns: {df.columns.tolist()}"
-    #     )
-    #
-    # # 准备任务列表：每个元素是 (idx, messages)
-    # # 其中 messages 是 openai chat 格式的 list[dict]
-    # tasks = []
-    # for idx, row in df.iterrows():
-    #     prompt = row["prompt"]
-    #
-    #     # 如果 parquet 里已经是 [{'role': 'user', 'content': '...'}] 这样的列表，直接用
-    #     if isinstance(prompt, list):
-    #         messages = prompt
-    #     else:
-    #         # 否则认为是字符串，包成一条 user message
-    #         messages = [{"role": "user", "content": str(prompt)}]
-    #
-    #     tasks.append((idx, messages))
-    #
-    # results_dict = {}  # idx -> (accepted, decision)
-    #
-    # # 初始化结果列，避免有些 idx 没跑到时报错
-    # df["accepted"] = False
-    # df["decision"] = None
-    #
-    # with ThreadPoolExecutor(max_workers=args.num_workers) as executor:
-    #     futures = {
-    #         executor.submit(
-    #             process_one, idx, messages, client, args.model
-    #         ): idx
-    #         for idx, messages in tasks
-    #     }
-    #
-    #     for future in tqdm(
-    #         as_completed(futures),
-    #         total=len(futures),
-    #         desc="Querying model",
-    #     ):
-    #         idx = futures[future]
-    #         try:
-    #             _idx, accepted, decision = future.result()
-    #             results_dict[_idx] = (accepted, decision)
-    #         except Exception as e:
-    #             print(f"[ERROR] Future for idx={idx} raised exception: {e}")
-    #             results_dict[idx] = (False, {"status": "error", "raw": None})
-    #
-    # # 写回到 df
-    # for idx, (accepted, decision) in results_dict.items():
-    #     df.at[idx, "accepted"] = accepted
-    #     # 保存为 JSON 字符串，方便后续解析
-    #     df.at[idx, "decision"] = json.dumps(decision, ensure_ascii=False)
+    # 读 parquet
+    df = pd.read_parquet(args.parquet_path)
 
-    #
-    # [{"role": "system", "content": r"Please reason step by step, and put your final answer within \boxed{}."},{"role": "user", "content": prompt_str}]
 
+    # df = df.head(100)
+    if "prompt" not in df.columns:
+        raise ValueError(
+            f"'prompt' column not found in dataframe columns: {df.columns.tolist()}"
+        )
+
+    # 准备任务列表：每个元素是 (idx, messages)
+    # 其中 messages 是 openai chat 格式的 list[dict]
+    tasks = []
+    for idx, row in df.iterrows():
+        prompt = row["prompt"]
+
+        # 如果 parquet 里已经是 [{'role': 'user', 'content': '...'}] 这样的列表，直接用
+        if isinstance(prompt, list):
+            messages = prompt
+        else:
+            # 否则认为是字符串，包成一条 user message
+            messages = [{"role": "user", "content": str(prompt)}]
+
+        tasks.append((idx, messages))
+
+    results_dict = {}  # idx -> (accepted, decision)
+
+    # 初始化结果列，避免有些 idx 没跑到时报错
+    df["accepted"] = False
+    df["decision"] = None
+
+    with ThreadPoolExecutor(max_workers=args.num_workers) as executor:
+        futures = {
+            executor.submit(
+                process_one, idx, messages, client, args.model
+            ): idx
+            for idx, messages in tasks
+        }
+
+        for future in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc="Querying model",
+        ):
+            idx = futures[future]
+            try:
+                _idx, accepted, decision = future.result()
+                results_dict[_idx] = (accepted, decision)
+            except Exception as e:
+                print(f"[ERROR] Future for idx={idx} raised exception: {e}")
+                results_dict[idx] = (False, {"status": "error", "raw": None})
+
+    # 写回到 df
+    for idx, (accepted, decision) in results_dict.items():
+        df.at[idx, "accepted"] = accepted
+        # 保存为 JSON 字符串，方便后续解析
+        df.at[idx, "decision"] = json.dumps(decision, ensure_ascii=False)
+
+    df.to_parquet(args.save_path, index=False)
+    # print(f"Saved results to {args.save_path}")
     df = pd.read_parquet(args.save_path)
 
     df = df[df['accepted'] ==True]
@@ -195,23 +216,35 @@ if __name__ == "__main__":
 
             if not isinstance(solver['solving_time_estimate'], int) and not isinstance(solver['solving_time_estimate'], float):
                 solver['solving_time_estimate'] = float(solver['solving_time_estimate'])
+
+
+            if not isinstance(solver['question'], str) and not isinstance(solver['question'], list) and not isinstance(solver['question'], tuple):
+                raise TypeError
             solver_list.append(solver)
 
         except:
             print('error at index:', idx)
             continue
-    solver_list = sorted(solver_list, key=lambda x: (x['difficulty_id'], len(x['intermediate_results']), x.get('solving_time_estimate', 100)))
+    solver_list = sorted(
+    solver_list,
+    key=lambda x: (
+        x.get('difficulty_id', 0),
+        len(x['intermediate_results']) if isinstance(x.get('intermediate_results'), (list, tuple)) else 100,
+        x.get('solving_time_estimate', 100),
+    )
+)
     solver_list = [_gen_single_item(idx, sample) for idx, sample in tqdm(enumerate(solver_list))]
 
-
-    # df.to_parquet(args.save_path, index=False)
-    # print(f"Saved results to {args.save_path}")
-
-
     solver_df = pd.DataFrame(solver_list)
+
+    bad = solver_df[~solver_df["prompt"].apply(lambda v: isinstance(v, list))]
+    print("bad rows:", len(bad))
+    print(bad[["prompt"]].head(5))
+    print(bad["prompt"].apply(type).value_counts())
+
+
+
+
     solver_df.to_parquet(args.solver_save_path, index=False)
-    print(f"Saved results to {args.solver_save_path}")
-
-
-
+    print(f"Saved solver results to {args.solver_save_path}, len(solver_df): {len(solver_df)}")
 

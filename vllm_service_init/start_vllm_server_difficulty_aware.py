@@ -31,7 +31,7 @@ import stopit  # 1. Import the thread-safe 'stopit' library
 parser = argparse.ArgumentParser()
 parser.add_argument('--port', type=str, default='5000')
 parser.add_argument('--model_path', type=str, default='Qwen/Qwen3-4B-Base')
-parser.add_argument('--gpu_mem_util', type=float, default=0.8,
+parser.add_argument('--gpu_mem_util', type=float, default=0.85,
                     help='The maximum GPU memory utilization fraction for vLLM.')
 parser.add_argument('--max_model_len', type=int, default=8192,
                     help='Maximum model sequence length (tokens) for the vLLM engine. Reduce to save KV cache memory.')
