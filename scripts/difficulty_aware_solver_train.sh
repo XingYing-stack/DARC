@@ -41,12 +41,14 @@ python3 -m verl.trainer.main \
     data.val_prompt_key=problem \
     data.val_answer_key=answer \
     trainer.val_freq=4 \
-    trainer.save_freq=4 \
+    trainer.save_freq=16 \
+    algorithm.kl_coef=0 \
     worker.actor.micro_batch_size_per_device_for_update=1 \
     worker.actor.micro_batch_size_per_device_for_experience=1 \
     worker.reward.reward_function=./examples/reward_function/difficulty_aware_solver.py:compute_score \
     worker.reward.reward_function_kwargs.solver_label_mode=self_vote \
     worker.reward.reward_function_kwargs.label_prompt_key=text_prompt \
+    worker.reward.reward_function_kwargs.label_vote_threshold=0.3 \
     worker.reward.reward_function_kwargs.label_n=10 \
     worker.reward.reward_function_kwargs.label_temperature=1.0 \
     worker.reward.reward_function_kwargs.label_top_p=0.95
@@ -54,10 +56,12 @@ python3 -m verl.trainer.main \
 
 #echo ""merging model
 #python scripts/model_merger.py --local_dir ${STORAGE_PATH}/models/${experiment_name}/global_step_55/actor
+
+# python scripts/model_merger.py --local_dir /share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_solver_1214/global_step_56/actor
 #
 #sleep 10
 #
 #echo "solver training finished"
 #
 #bash evaluation/evaluate.bash ${STORAGE_PATH}/models/${experiment_name}/global_step_15/actor/huggingface
-#bash evaluation/evaluate.bash /share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_solver_1209/global_step_15/actor/huggingface
+#bash evaluation/evaluate.bash /share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_solver_1214/global_step_56/actor/huggingface

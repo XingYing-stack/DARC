@@ -408,6 +408,7 @@ class RayPPOTrainer:
                 return ""
 
             answers_per_item: List[str] = [""] * m
+            vote_frac_per_item: List[float] = [0.0] * m
             for idx in range(m):
                 group = resp_ids[idx * n : (idx + 1) * n]
                 texts = [self.tokenizer.decode(t.tolist(), skip_special_tokens=True) for t in group]
@@ -415,6 +416,7 @@ class RayPPOTrainer:
                 cnt = Counter(a for a in ans if a)
                 if not cnt:
                     answers_per_item[idx] = ""
+                    vote_frac_per_item[idx] = 0.0
                 else:
                     top = cnt.most_common()
                     winners = {a for a, c in top if c == top[0][1]}
@@ -424,6 +426,10 @@ class RayPPOTrainer:
                             chosen = a
                             break
                     answers_per_item[idx] = chosen
+                    try:
+                        vote_frac_per_item[idx] = float(top[0][1]) / max(n, 1)
+                    except Exception:
+                        vote_frac_per_item[idx] = 0.0
 
             # Write back into ground_truth as rule gold
             gts = ntb.get("ground_truth")
@@ -447,6 +453,17 @@ class RayPPOTrainer:
 
                 if random.random() > 0.99:
                     print('batch.non_tensor_batch:', batch.non_tensor_batch)
+
+            # attach per-sample vote fraction for optional masking later
+            try:
+                # initialize with 1.0 so non-labeled items are not masked out by default
+                ratios = np.ones((len(batch),), dtype=np.float32)
+                for local_idx, frac in enumerate(vote_frac_per_item):
+                    bi = batch_to_label_idx[local_idx]
+                    ratios[bi] = float(frac)
+                batch.non_tensor_batch["self_vote_ratio"] = ratios
+            except Exception:
+                pass
 
         except Exception as e:
             # be robust; on failure, leave ground_truth unchanged
@@ -793,6 +810,87 @@ class RayPPOTrainer:
                             gamma=self.config.algorithm.gamma,
                             lam=self.config.algorithm.lam,
                         )
+
+                        # Optionally mask out samples with low self-vote confidence by zeroing advantages
+                        try:
+                            kwargs = getattr(self.config.worker.reward, "reward_function_kwargs", {}) or {}
+                            thr = float(kwargs.get("label_vote_threshold", os.getenv("LABEL_VOTE_THRESHOLD", "0") or 0))
+                        except Exception:
+                            thr = 0.0
+                        if thr and "self_vote_ratio" in batch.non_tensor_batch:
+                            try:
+                                ratios_np = batch.non_tensor_batch["self_vote_ratio"]
+                                # ensure numeric array
+                                ratios = torch.as_tensor(ratios_np, dtype=batch.batch["advantages"].dtype, device=batch.batch["advantages"].device)
+                                mask = (ratios >= thr).to(batch.batch["advantages"].dtype).unsqueeze(-1)
+                                batch.batch["advantages"] = batch.batch["advantages"] * mask
+                                if "returns" in batch.batch.keys():
+                                    batch.batch["returns"] = batch.batch["returns"] * mask
+                                # log proportion kept
+                                try:
+                                    metrics["grpo/self_vote_keep_frac"] = float((ratios >= thr).float().mean().item())
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+
+                        # GRPO group-level stats: count kept prompts and active prompts (std>0), and std stats
+                        try:
+                            if self.config.algorithm.adv_estimator == AdvantageEstimator.GRPO:
+                                uids = batch.non_tensor_batch.get("uid")
+                                if uids is not None:
+                                    # per-sample rewards (sum over tokens) as outcome scores
+                                    scores = batch.batch["token_level_rewards"].sum(dim=-1).detach().float().cpu().tolist()
+                                    # whether sample is kept by mask threshold; default True if no ratio or thr<=0
+                                    kept_flags = None
+                                    if thr and "self_vote_ratio" in batch.non_tensor_batch:
+                                        try:
+                                            kept_flags = (np.asarray(batch.non_tensor_batch["self_vote_ratio"]) >= float(thr)).tolist()
+                                        except Exception:
+                                            kept_flags = None
+                                    if kept_flags is None:
+                                        kept_flags = [True] * len(scores)
+
+                                    # group by uid
+                                    try:
+                                        uid_list = uids.tolist() if hasattr(uids, "tolist") else list(uids)
+                                    except Exception:
+                                        uid_list = list(uids)
+
+                                    group_scores = {}
+                                    group_any_keep = {}
+                                    for i, g in enumerate(uid_list):
+                                        group_scores.setdefault(g, []).append(scores[i])
+                                        if kept_flags[i]:
+                                            group_any_keep[g] = True
+                                        elif g not in group_any_keep:
+                                            group_any_keep[g] = False
+
+                                    stds_active = []
+                                    kept_count = 0
+                                    active_count = 0
+                                    for g, lst in group_scores.items():
+                                        # std over n samples; if n<=1 -> 0
+                                        s = float(np.std(np.asarray(lst), ddof=0)) if len(lst) > 1 else 0.0
+                                        if group_any_keep.get(g, True):
+                                            kept_count += 1
+                                            if s > 0.0:
+                                                active_count += 1
+                                                stds_active.append(s)
+
+                                    # stats over active groups
+                                    if len(stds_active) > 0:
+                                        metrics["grpo/std_max"] = float(np.max(stds_active))
+                                        metrics["grpo/std_min"] = float(np.min(stds_active))
+                                        metrics["grpo/std_mean"] = float(np.mean(stds_active))
+                                    else:
+                                        metrics["grpo/std_max"] = 0.0
+                                        metrics["grpo/std_min"] = 0.0
+                                        metrics["grpo/std_mean"] = 0.0
+                                    metrics["grpo/kept_prompts"] = int(kept_count)
+                                    metrics["grpo/active_prompts"] = int(active_count)
+                        except Exception:
+                            pass
 
                     # Optionally dump rollout samples for debugging
                     try:
