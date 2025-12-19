@@ -136,7 +136,12 @@ def compute_gae_advantage_return(
 # NOTE(sgm): this implementation only consider outcome supervision, where the reward is a scalar.
 @torch.no_grad()
 def compute_grpo_outcome_advantage(
-    token_level_rewards: torch.Tensor, response_mask: torch.Tensor, index: torch.Tensor, eps: float = 1e-6
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: torch.Tensor,
+    eps: float = 1e-6,
+    *,
+    norm_adv_by_std_in_grpo: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute advantage for GRPO, operating only on Outcome reward
@@ -169,7 +174,10 @@ def compute_grpo_outcome_advantage(
         id2std[idx] = torch.std(torch.tensor(id2score[idx]))
 
     for i in range(bsz):
-        scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + eps)
+        if norm_adv_by_std_in_grpo:
+            scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + eps)
+        else:
+            scores[i] = scores[i] - id2mean[index[i]]
 
     returns = scores.unsqueeze(-1) * response_mask
     return returns, returns
@@ -288,6 +296,41 @@ def compute_rewards(
     return token_level_scores - kl * kl_ratio
 
 
+def agg_loss(loss_mat: torch.Tensor, loss_mask: torch.Tensor, loss_agg_mode: str) -> torch.Tensor:
+    """
+    Aggregate the loss matrix into a scalar.
+
+    Args:
+        loss_mat: `(torch.Tensor)`:
+            shape: (bs, response_length)
+        loss_mask: `(torch.Tensor)`:
+            shape: (bs, response_length)
+        loss_agg_mode: (str) choices:
+            method to aggregate the loss matrix into a scalar.
+    Returns:
+        loss: `a scalar torch.Tensor`
+            aggregated loss
+    """
+    if loss_agg_mode == "token-mean":
+        loss = VF.masked_mean(loss_mat, loss_mask)
+    elif loss_agg_mode == "seq-mean-token-sum":
+        seq_losses = torch.sum(loss_mat * loss_mask, dim=-1)  # token-sum
+        seq_mask = (torch.sum(loss_mask, dim=-1) > 0).float()  # exclude fully masked sequences
+        loss = VF.masked_mean(seq_losses, seq_mask)  # seq-mean
+    elif loss_agg_mode == "seq-mean-token-mean":
+        seq_mask = torch.sum(loss_mask, dim=-1)  # per-sequence token count
+        seq_losses = torch.sum(loss_mat * loss_mask, dim=-1) / (seq_mask + 1e-8)  # token-mean
+        seq_mask = (seq_mask > 0).float()  # exclude fully masked sequences
+        loss = VF.masked_mean(seq_losses, seq_mask)  # seq-mean
+    elif loss_agg_mode == "seq-mean-token-sum-norm":
+        seq_losses = torch.sum(loss_mat * loss_mask, dim=-1)
+        loss = torch.sum(seq_losses) / loss_mask.shape[-1]  # The divisor
+        # (loss_mask.shape[-1]) should ideally be constant
+        # throughout training to well-replicate the DrGRPO paper.
+    else:
+        raise ValueError(f"Invalid loss_agg_mode: {loss_agg_mode}")
+    return loss
+
 def compute_policy_loss(
     old_log_probs: torch.Tensor,
     log_probs: torch.Tensor,
@@ -296,6 +339,8 @@ def compute_policy_loss(
     clip_ratio_low: float,
     clip_ratio_high: float,
     clip_ratio_dual: float,
+    *,
+    loss_agg_mode: str = "token-mean",
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute the policy loss.
 
@@ -346,7 +391,8 @@ def compute_policy_loss(
     final_pg_loss = torch.where(advantages < 0, clipped_pg_loss_lower, clipped_pg_loss_higher)
     pg_clipfrac_lower = (clipped_pg_loss_higher > pg_loss3).float() * (advantages < 0).float()
 
-    final_pg_loss = VF.masked_mean(final_pg_loss, response_mask)
+    # aggregate policy loss according to configured mode
+    final_pg_loss = agg_loss(final_pg_loss, response_mask, loss_agg_mode)
     pg_clipfrac_higher = VF.masked_mean(pg_clipfrac_higher, response_mask)
     pg_clipfrac_lower = VF.masked_mean(pg_clipfrac_lower, response_mask)
     ppo_kl = VF.masked_mean(-negative_approx_kl, response_mask)

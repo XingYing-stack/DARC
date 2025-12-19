@@ -41,6 +41,12 @@ SERVER_BASE_PORT = int(os.getenv("SOLVER_SERVER_BASE_PORT", "5000"))
 SERVER_COUNT = int(os.getenv("SOLVER_SERVER_COUNT", "4"))
 HTTP_TIMEOUT = float(os.getenv("SOLVER_HTTP_TIMEOUT", "1200"))
 HTTP_RETRIES = int(os.getenv("SOLVER_HTTP_RETRIES", "2"))
+
+# Copy penalty controls (to prevent copying question from source text)
+ENABLE_COPY_PENALTY = os.getenv("ENABLE_COPY_PENALTY", "1") == "1"
+COPY_N = int(os.getenv("COPY_N", "6"))  # char n-gram size
+COPY_TEXT_MAXLEN = int(os.getenv("COPY_TEXT_MAXLEN", "50000"))  # max chars of source text to scan
+COPY_HARD_THRESHOLD = float(os.getenv("COPY_HARD_THRESHOLD", "0.8"))  # if copy_ratio > threshold => overall = -1
 def _parse_target_solver_accuracy() -> Dict[int, float]:
     """Allow overriding target accuracy by env `TARGET_SOLVER_ACCURACY`.
 
@@ -463,14 +469,76 @@ def difficulty_reward(solver_score: Optional[float], difficulty_id: Optional[int
         return -1.0
     if difficulty_id not in TARGET_SOLVER_ACCURACY:
         return -1.0
-    # if solver_score == 0:
-    #     return -0.1
+    if solver_score == 0:
+        return -0.1
 
     target = float(TARGET_SOLVER_ACCURACY[difficulty_id])
 
     score = 1 - abs(solver_score - target)
     return score
 
+
+def _normalize_for_ngram(s: str) -> str:
+    """Normalize string for n-gram matching.
+
+    - Lowercase
+    - Remove most punctuation
+    - Collapse whitespace
+    - Keep CJK and word characters
+    """
+    if not isinstance(s, str):
+        return ""
+    s = s.lower()
+    # keep word chars and CJK; replace others with space
+    s = re.sub(r"[^\w\u4e00-\u9fff]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _char_ngrams(s: str, n: int) -> List[str]:
+    if n <= 0:
+        return []
+    if len(s) < n:
+        return []
+    return [s[i : i + n] for i in range(0, len(s) - n + 1)]
+
+
+def compute_copy_ratio(text: str, question: str, n: int = COPY_N, maxlen: int = COPY_TEXT_MAXLEN) -> float:
+    """Estimate how much of `question` is copied from `text` via char n-gram containment.
+
+    Returns a ratio in [0, 1]. High values indicate likely copying.
+    - If the normalized question is a substring of normalized text, returns 1.0.
+    - Otherwise returns fraction of question n-grams that appear in text n-grams.
+    """
+    try:
+        if not text or not question:
+            return 0.0
+        qn = _normalize_for_ngram(question)
+        tn_raw = text[: maxlen]
+        tn = _normalize_for_ngram(tn_raw)
+        if not qn or not tn:
+            return 0.0
+        # direct substring check as a strong signal
+        if qn and qn in tn:
+            return 1.0
+        # fall back to n-gram containment
+        n = max(2, int(n))
+        q_ngrams = _char_ngrams(qn.replace(" ", ""), n)
+        if not q_ngrams:
+            # very short question; try word-level token containment
+            q_tokens = [t for t in qn.split() if t]
+            if not q_tokens:
+                return 0.0
+            t_set = set(tn.split())
+            overlap = sum(1 for t in q_tokens if t in t_set)
+            return overlap / max(1, len(q_tokens))
+        t_ngrams = set(_char_ngrams(tn.replace(" ", ""), n))
+        if not t_ngrams:
+            return 0.0
+        hit = sum(1 for g in q_ngrams if g in t_ngrams)
+        return hit / max(1, len(q_ngrams))
+    except Exception:
+        return 0.0
 
 
 DEEPSEEK_API_URL = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com")
@@ -746,6 +814,15 @@ def compute_score(
 
         # prepare relation check if source text available
         gt_text = extract_text_from_ground_truth(ground_truths[idx])
+        # apply copy penalty if question is highly repetitive with source text
+        if ENABLE_COPY_PENALTY and gt_text and payload.get("question"):
+            try:
+                cr = compute_copy_ratio(gt_text, payload.get("question", ""))
+                debug_rec["copy_ratio"] = float(cr)
+                if cr > COPY_HARD_THRESHOLD:
+                    scores[idx]["overall"] = -1.0
+            except Exception:
+                pass
         if gt_text and payload.get("question"):
             relation_payload.append({"text": gt_text, "question": payload["question"]})
             relation_meta.append(idx)
@@ -786,7 +863,7 @@ def compute_score(
     # Optional: add pairwise ranking penalty/bonus within the same document to
     # encourage monotonic ordering of solver success across difficulty levels.
     if os.getenv("ENABLE_DIFFICULTY_RANKING", "1") == "1":
-        margin = float(os.getenv("RANKING_MARGIN", "0.1"))
+        margin = float(os.getenv("RANKING_MARGIN", "0.2"))
         weight = float(os.getenv("RANKING_WEIGHT", "0.5"))
 
         # Build groups: doc_id -> list of (sample_idx, difficulty, solver_score)
@@ -864,6 +941,11 @@ def compute_score(
                 extra = f", text_majority_fraction: {float(rec['text_majority_fraction']):.3f}"
             except Exception:
                 extra = f", text_majority_fraction: {rec['text_majority_fraction']}"
+        if 'copy_ratio' in rec:
+            try:
+                extra += f", copy_ratio: {float(rec['copy_ratio']):.3f}"
+            except Exception:
+                extra += f", copy_ratio: {rec['copy_ratio']}"
         print(
             f"question: {rec['question']}, answer: {rec['answer']}, "
             f"solver_score: {rec['solver_score']}, difficulty_id:{rec['difficulty_id']}, "

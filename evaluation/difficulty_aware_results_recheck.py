@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 
-# python evaluation/difficulty_aware_results_recheck.py --result_path /share_data/data1/fanshengda/DEvo/ckpts/evaluation/_share_data_data1_fanshengda_DEvo_ckpts_models_qwen3-4b-difficulty_aware_solver_1209_global_step_15_actor_huggingface
+# python evaluation/difficulty_aware_results_recheck.py --result_path /share_data/data1/fanshengda/DEvo/ckpts/evaluation/_share_data_data1_fanshengda_DEvo_ckpts_models_qwen3-4b-difficulty_aware_solver_1214_global_step_64_actor_huggingface_
 parser = argparse.ArgumentParser()
 parser.add_argument("--result_path", type=str)
 parser.add_argument("--model_name", type=str, default="gpt-4o")
@@ -18,8 +18,8 @@ args = parser.parse_args()
 # ----------------------------
 #   保持硬编码不动
 # ----------------------------
-api_urls = ["https://toollearning.cn/v1"]
-api_keys = ["sk-abHpUvVt7LLnmEyxCe17021d8e774e97Bd7aA9Bc4f2b1076"]
+api_urls = ["https://api.gptsapi.net/v1"]
+api_keys = ["sk-54oeef36602430a9a264f8ea73ec8365c3d39c5622d24XMb"]
 
 # 提前建好 client 列表（每个 url/key 一个 client）
 clients = [

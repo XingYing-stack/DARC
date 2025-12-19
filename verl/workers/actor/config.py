@@ -90,6 +90,9 @@ class ActorConfig:
     optim: OptimConfig = field(default_factory=OptimConfig)
     fsdp: FSDPConfig = field(default_factory=FSDPConfig)
     offload: OffloadConfig = field(default_factory=OffloadConfig)
+    # Loss aggregation mode for token-level losses
+    # Choices: 'token-mean', 'seq-mean-token-sum', 'seq-mean-token-mean', 'seq-mean-token-sum-norm'
+    loss_agg_mode: str = "token-mean"
     """auto keys"""
     global_batch_size_per_device: int = field(default=-1, init=False)
     disable_kl: bool = field(default=False, init=False)

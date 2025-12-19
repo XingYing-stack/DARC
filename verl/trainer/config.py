@@ -76,6 +76,9 @@ class AlgorithmConfig:
     kl_horizon: float = 0.0
     kl_target: float = 0.0
     mock_data: str = ""
+    # Whether to normalize GRPO advantages by group std (original GRPO)
+    # Set to False for DrGRPO
+    norm_adv_by_std_in_grpo: bool = True
 
 @dataclass
 class TrainerConfig:

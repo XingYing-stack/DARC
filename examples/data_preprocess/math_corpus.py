@@ -46,75 +46,70 @@ id2def = {
 id2ICL = {
     1: """
 {
-  "analysis": "Construct an easy-level question requiring only one reasoning step and a single intermediate result. We use the gravitational potential energy formula U = mgh. Only one span is needed (the formula) and one arithmetic operation, fully satisfying the Easy level definition.",
-  "question": "A 3 kg bowling ball is lifted to a height of 1.5 meters above the lane. Taking g = 9.81 m/s^2, what is its gravitational potential energy relative to the lane surface? Give your answer in joules, rounded to the nearest whole number.",
+  "analysis": "Construct an easy-level AMC-style question using a single fact from the setting: there are 23 coins and exactly one is counterfeit. Only one reasoning step (subtraction) is required, satisfying the Easy difficulty definition.",
+  "question": "A collection contains 23 coins. Exactly one of them is counterfeit. How many of the coins are genuine?",
   "intermediate_results": {
-    "step1_compute_U": "Compute U = mgh = 3 × 9.81 × 1.5 ≈ 44.145 J."
+    "step1_count_genuine": "Since there are 23 coins in total and exactly 1 is counterfeit, the number of genuine coins is 23 − 1 = 22."
   },
-  "answer": 44,
+  "answer": 22,
   "solving_time_estimate": 1,
   "required_concepts": [
-    "Gravitational potential energy"
+    "Basic counting",
+    "Subtraction"
   ],
   "potential_errors": [
-    "Using g = 10 instead of 9.81",
-    "Forgetting to round the final answer"
+    "Forgetting that exactly one coin is counterfeit",
+    "Subtracting more than one coin"
   ]
 }
 """,
 
     2: """
 {
-  "analysis": "Design a moderate-level problem requiring exactly two reasoning steps and two intermediate results. The problem uses: (1) translational deceleration from friction a = μg, and (2) the stopping distance formula d = v0^2 / (2a). These two linked steps satisfy the Moderate complexity requirement.",
-  "question": "A bowling ball slides on a horizontal lane with initial speed 7.0 m/s. The coefficient of sliding friction is μ = 0.25, and g = 9.81 m/s^2. Assuming friction is the only horizontal force, how far does the ball slide before stopping? Give your answer in meters, rounded to two decimal places.",
+  "analysis": "Design a moderate-level AMC-style problem requiring exactly two reasoning steps: counting the number of possible counterfeit coins and accounting for the two possible weight deviations (heavier or lighter). This combines two facts from the setting and meets the Moderate difficulty definition.",
+  "question": "There are 23 visually identical coins. Exactly one coin is counterfeit and is either heavier or lighter than a genuine coin. Each possible situation is determined by choosing the counterfeit coin and whether it is heavier or lighter. How many distinct situations are possible?",
   "intermediate_results": {
-    "step1_compute_deceleration": "Compute the friction-based deceleration a = μg = 0.25 × 9.81 ≈ 2.4525 m/s^2.",
-    "step2_compute_distance": "Use d = v0^2 / (2a) = 7.0^2 / (2 × 2.4525) ≈ 9.99 m."
+    "step1_choose_coin": "There are 23 possible choices for which coin is counterfeit.",
+    "step2_account_weight": "Each counterfeit coin can be either heavier or lighter, giving 23 × 2 = 46 distinct situations."
   },
-  "answer": 9.99,
-  "solving_time_estimate": 4,
+  "answer": 46,
+  "solving_time_estimate": 3,
   "required_concepts": [
-    "Kinetic friction",
-    "Constant-acceleration kinematics"
+    "Counting principles",
+    "Case analysis"
   ],
   "potential_errors": [
-    "Using the wrong sign for deceleration",
-    "Using mass in a = μg even though it cancels",
-    "Using v^2 = v0^2 + 2ad with the wrong sign"
+    "Forgetting to count both heavier and lighter cases",
+    "Adding instead of multiplying the cases",
+    "Assuming the counterfeit coin's weight difference is known"
   ]
 }
 """,
 
     3: """
 {
-  "analysis": "Create a hard-level problem requiring a deep multi-step reasoning chain involving coupled translational and rotational dynamics. We require eight intermediate reasoning steps. A ball is slid without rotation; friction slows translation, increases rotation, and the ball enters pure rolling when v = ωr. Then compute the distance traveled until that moment. This problem uses many spans (a, α, torque, inertia, rolling constraint, motion equations) and satisfies the Hard definition with 8+ reasoning steps.",
-  "question": "A solid bowling ball of mass 6 kg and radius 0.12 m is thrown along a horizontal lane with initial speed 12.0 m/s and no initial rotation. The coefficient of sliding friction is μ = 0.22, and g = 9.81 m/s^2. Friction slows translation and increases rotation until the ball reaches rolling without slipping. Treat the ball as a solid sphere with moment of inertia I = (2/5)mr^2. Assuming constant friction, how far does the ball travel before it first reaches pure rolling? Give your answer in meters, rounded to two decimal places.",
+  "analysis": "Create a hard-level AMC-style problem requiring global synthesis and multiple reasoning steps. The problem combines: counting all counterfeit scenarios, understanding ternary outcomes of an electronic balance, and applying an information-capacity argument using powers of 3. This satisfies the Hard difficulty definition with 5+ reasoning steps.",
+  "question": "There are 23 visually identical coins. Exactly one coin is counterfeit and is either heavier or lighter than a genuine coin. You have an electronic balance scale where each weighing has exactly three possible outcomes: the left side is heavier, the right side is heavier, or the two sides balance. What is the minimum number of weighings required, in principle, to always determine which coin is counterfeit and whether it is heavier or lighter?",
   "intermediate_results": {
-    "step1_compute_linear_deceleration": "a = μg = 0.22 × 9.81 ≈ 2.1582 m/s^2.",
-    "step2_compute_friction_force": "F = μmg = 0.22 × 6 × 9.81 ≈ 12.9492 N.",
-    "step3_compute_torque": "τ = Fr = 12.9492 × 0.12 ≈ 1.5539 N·m.",
-    "step4_compute_inertia": "I = (2/5)mr^2 = (2/5) × 6 × 0.12^2 ≈ 0.03456 kg·m^2.",
-    "step5_compute_angular_acceleration": "α = τ / I ≈ 1.5539 / 0.03456 ≈ 44.9625 rad/s^2.",
-    "step6_set_up_motion_equations": "v(t) = v0 - at, ω(t) = αt, with v0 = 12.0 m/s.",
-    "step7_solve_for_time": "Rolling starts when v(t) = ω(t) r ⇒ 12.0 - 2.1582 t = 44.9625 t × 0.12. 12 = (2.1582 + 5.3955)t. Solve for t ≈ 1.5886 s.",
-    "step8_compute_distance": "d = v0 t - 0.5 a t^2 = 12 × 1.5886 - 0.5 × 2.1582 × 1.5886^2 ≈ 19.0632 - 2.7231 ≈ 16.34 m."
+    "step1_count_scenarios": "There are 23 choices for the counterfeit coin and 2 possible weight deviations, giving 23 × 2 = 46 scenarios.",
+    "step2_outcomes_per_weighing": "Each weighing has 3 possible outcomes.",
+    "step3_total_sequences": "With k weighings, the maximum number of distinct outcome sequences is 3^k.",
+    "step4_test_three_weighings": "3^3 = 27, which is less than 46, so three weighings are insufficient.",
+    "step5_test_four_weighings": "3^4 = 81, which is at least 46, so four weighings are sufficient in principle."
   },
-  "answer": 16.34,
-  "solving_time_estimate": 15,
+  "answer": 4,
+  "solving_time_estimate": 8,
   "required_concepts": [
-    "Kinetic friction",
-    "Torque due to friction",
-    "Moment of inertia of a solid sphere",
-    "Coupled translational and rotational motion",
-    "Rolling without slipping condition"
+    "Counting counterfeit scenarios",
+    "Ternary outcome systems",
+    "Powers of 3",
+    "Information-capacity reasoning"
   ],
   "potential_errors": [
-    "Using wrong sign conventions",
-    "Forgetting that friction accelerates rotation while decelerating translation",
-    "Using ω = v/r instead of v = ωr",
-    "Dropping the factor (2/5) in I",
-    "Incorrectly solving the equation for t",
-    "Forgetting the 0.5 a t^2 term in distance"
+    "Forgetting to include both heavier and lighter cases",
+    "Using 2^k instead of 3^k",
+    "Assuming three weighings are sufficient without checking capacity",
+    "Miscalculating powers of 3"
   ]
 }
 """
@@ -164,6 +159,7 @@ Rules:
 6. The answer must be unique and consistent with the document.
 7. All variables must be defined in the question itself.
 8. No ambiguity.
+9. Don't copy the question form the document.
 
 ---
 
@@ -216,13 +212,20 @@ Minutes required.
 
 ---
 
-# Example Output (do not copy; only follow structure; the content and answer type (Integer vs Float) in the example below are for structure demonstration only. The example is based on a generic Physics document. Your output must be based on the provided [Document] above and strictly follow the "difficulty_id" and "answer_type" assigned to you.)
+# Example (do not copy; only follow structure; the content and answer type (Integer vs Float) in the example below are for structure demonstration only. The example is based on a generic Physics document. Your output must be based on the provided [Document] above and strictly follow the "difficulty_id" and "answer_type" assigned to you.)
+
+## Example Input
+[BEGIN]
+# The Most Difficult Problem in South Vietnam 2010\\n\\n## Problem Statement\\n\\nYou have a total of 23 coins, among which one is a counterfeit coin. The counterfeit coin is either lighter or heavier than the real coins. You have access to an electronic balance scale that can be used three times. The scale shows whether the left side is heavier, the right side is heavier, or if both sides are equal. Your task is to find the counterfeit coin.\\n\\n### Discussion\\n\\n#### giacat (2010-09-08 04:46:20)\\n\\n**Member**\\n- Registered: 2010-09-02\\n- Posts: 2\\n\\nThe problem involves finding the counterfeit coin among 23 coins using an electronic balance scale three times. The scale provides a deviation value: positive if the left side is heavier, negative if the right side is heavier, and zero if both sides are equal.\\n\\n#### bob bundy (2010-09-08 07:51:10)\\n\\n**Moderator**\\n- Registered: 2010-06-20\\n- Posts: 7,736\\n\\n**Re: The Most Difficult Problem in South Vietnam 2010**\\n\\nHi giacat,\\n\\nThis problem is quite challenging. If the balance scale is like the one described, it might be possible to solve the problem with fewer coins, such as 12. It would be helpful to know the weight of a real coin.\\n\\nBob\\n\\n*Children are not defined by school... The Fonz*\\n\\n*You cannot teach a man anything; you can only help him find it within himself... Galileo Galilei*\\n\\n#### soroban (2010-09-08 18:10:47)\\n\\n**Member**\\n- Registered: 2007-03-09\\n- Posts: 452\\n\\n**Re: The Most Difficult Problem in South Vietnam 2010**\\n\\nGiacat\'s images were submitted for reference.\\n\\n### Solution Approach\\n\\nTo solve this problem, we can use a strategy that involves dividing the coins into groups and using the balance scale to systematically eliminate possibilities. Here is a step-by-step approach:\\n\\n1. **First Weighing**: Divide the 23 coins into three groups: 8 coins, 8 coins, and 7 coins. Weigh the first group against the second group.\\n - If they balance, the counterfeit coin is in the group of 7 coins.\\n - If they do not balance, the counterfeit coin is in the heavier or lighter group, depending on whether the counterfeit is heavier or lighter.\\n\\n2. **Second Weighing**: Take the group that contains the counterfeit coin (either 8 or 7 coins) and divide it into three smaller groups. For example, if you have 8 coins, divide them into groups of 3, 3, and 2. If you have 7 coins, divide them into groups of 3, 3, and 1.\\n - Weigh two of the smaller groups against each other.\\n - If they balance, the counterfeit coin is in the remaining group.\\n - If they do not balance, the counterfeit coin is in the heavier or lighter group.\\n\\n3. **Third Weighing**: Take the remaining group that contains the counterfeit coin (either 3 or 2 coins) and weigh two of the coins against each other.\\n - If they balance, the counterfeit coin is the one not weighed.\\n - If they do not balance, the counterfeit coin is the heavier or lighter one, depending on the previous weighings.\\n\\nBy following this method, you can identify the counterfeit coin within three weighings.\\n\\n### Conclusion\\n\\nThis problem requires careful planning and logical deduction to identify the counterfeit coin using the balance scale effectively. The key is to reduce the number of possibilities systematically with each weighing.
+[END]
+
+## Example Output
 
 {example}
 '''
 
 
-def _gen_single_item(text: str, idx: int, difficulty_id: int, answer_type: str, type: str):
+def _gen_single_item(text: str, idx: int, difficulty_id: int, answer_type: str, _type: str):
     """构造一条样本（给定 text/doc 与目标难度/答案类型）。"""
     # Map numeric difficulty id to label used in the prompt
     id2level = {1: 'Easy', 2: 'Moderate', 3: 'Hard'}
@@ -242,7 +245,7 @@ def _gen_single_item(text: str, idx: int, difficulty_id: int, answer_type: str, 
                 "content": question,
             }
         ],
-        "ability": type,
+        "ability": _type,
         "reward_model": {"style": "rule", "ground_truth": difficulty_id},
         "extra_info": {
             "split": "train",
@@ -287,11 +290,11 @@ def process_batch_fn(batch, indices, difficulties=(1, 2, 3), k_per_doc=None, int
 
             # NOTE : hard code判类别
 
-            if batch['language_id_whole_page_fasttext'][i] is None:
+            if 'language_id_whole_page_fasttext' not in batch or batch['language_id_whole_page_fasttext'][i] is None:
                 type = 'math'
             else:
                 type = 'general'
-            item = _gen_single_item(text=text, idx=doc_idx, difficulty_id=d, answer_type=answer_type, type=type)
+            item = _gen_single_item(text=text, idx=doc_idx, difficulty_id=d, answer_type=answer_type, _type=type)
             for k in out.keys():
                 out[k].append(item[k])
 
@@ -302,12 +305,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--local_dataset_path",
-        default="/share_data/data1/fanshengda/DEvo/data/all_filter1212.parquet",
+        default="/share_data/data1/fanshengda/DEvo/data/math_filter1212.parquet",
         help="The local path to the raw dataset, if it exists.",
     )
     parser.add_argument(
         "--local_save_dir",
-        default="/share_data/data1/fanshengda/DEvo/data/challenger_1212",
+        default="/share_data/data1/fanshengda/DEvo/data/challenger_1216",
         help="The save directory for the preprocessed dataset.",
     )
     parser.add_argument(
@@ -324,14 +327,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--int_ratio",
         type=float,
-        default=0.6,
+        default=0.8,
         help="Probability of integer answer type; remainder uses float.",
     )
 
     args = parser.parse_args()
 
     # 1. 读原始 parquet，用 pandas -> HF Dataset
-    df = pd.read_parquet(args.local_dataset_path).head(20000)
+    df = pd.read_parquet(args.local_dataset_path).head(10000)
     dataset = Dataset.from_pandas(df)
     dataset = dataset.shuffle(seed=42)
 

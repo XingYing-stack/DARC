@@ -6,9 +6,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 import pandas as pd
 from openai import OpenAI
-
-from examples.reward_function.difficulty_aware_questioner import difficulty_reward
-
+import pandas as pd
+import torch
+from sentence_transformers import SentenceTransformer, util
+from tqdm import tqdm
+from collections import Counter
+import os
 
 def process_one(idx, messages, client: OpenAI, model_name: str):
     """
@@ -37,6 +40,12 @@ def process_one(idx, messages, client: OpenAI, model_name: str):
             "raw": str(e),
         }
         return idx, False, decision
+
+
+def ensure_parent_dir(path: str):
+    parent = os.path.dirname(path)
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent, exist_ok=True)
 
 
 def _gen_single_item(idx, sample):
@@ -77,11 +86,189 @@ def _gen_single_item(idx, sample):
             "index": idx,
             "text": sample['text'],
             # "analysis": str(sample['analysis']),
-            # 'difficulty_id': sample['difficulty_id'],
+            'difficulty_id': sample['difficulty_id'],
             # 'solving_time_estimate':sample['solving_time_estimate'],
         },
     }
 
+def has_surrogate_in_anything(x) -> bool:
+    # 递归检查：str / list / tuple / dict / 其它转 str
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return False
+    if isinstance(x, str):
+        return any(0xD800 <= ord(c) <= 0xDFFF for c in x)
+    if isinstance(x, (list, tuple)):
+        return any(has_surrogate_in_anything(v) for v in x)
+    if isinstance(x, dict):
+        return any(has_surrogate_in_anything(k) or has_surrogate_in_anything(v) for k, v in x.items())
+    # 兜底：某些对象 stringify 后可能暴露 surrogate
+    try:
+        s = str(x)
+        return any(0xD800 <= ord(c) <= 0xDFFF for c in s)
+    except Exception:
+        return False
+
+
+import time
+import json
+import pandas as pd
+from openai import OpenAI
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+SYSTEM_PROMPT = """You are a dataset filtering judge.
+
+Decide whether to KEEP the sample.
+
+KEEP if the TEXT clearly helps answer the QUESTION and the QUESTION can be answered without the document.
+
+Be lenient. Do NOT over-filter.
+
+Return ONLY one word:
+true or false
+"""
+
+
+def _call_judge(client, model, question, text, max_retries=3):
+    user_prompt = f"""QUESTION:
+{question}
+
+TEXT:
+{text}
+
+Should this sample be kept?"""
+
+    for attempt in range(max_retries):
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.0,
+            )
+            out = resp.choices[0].message.content.strip().lower()
+            if "true" in out:
+                return True
+            if "false" in out:
+                return False
+        except Exception:
+            time.sleep(0.8 * (2 ** attempt))
+
+    # fail-open：避免误删
+    return True
+
+def assert_curriculum_order(df):
+    did = df["extra_info"].apply(lambda x: x.get("difficulty_id", -1)).tolist()
+    idxs = df["extra_info"].apply(lambda x: x.get("index", -1)).tolist()
+    assert idxs == sorted(idxs), "extra_info.index is not non-decreasing (order corrupted?)"
+    # 可选：difficulty 也应当非降（如果你的排序目标就是这个）
+    assert did == sorted(did), "difficulty_id is not non-decreasing (order corrupted?)"
+
+
+def filter_unrelative(df, base_url, api_key, model="gpt-5-mini", max_workers=32):
+    client = OpenAI(api_key=api_key, base_url=base_url)
+
+    data = df.to_dict(orient="records")
+
+    questions = [sample["prompt"][1]["content"] for sample in data]
+    texts = [sample["extra_info"]["text"] for sample in data]
+
+    keep_mask = [True] * len(data)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _call_judge, client, model, questions[i], texts[i]
+            ): i
+            for i in range(len(data))
+        }
+
+        for future in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc="Filtering (LLM judge)",
+        ):
+            idx = futures[future]
+            try:
+                keep_mask[idx] = future.result()
+            except Exception:
+                keep_mask[idx] = True  # fail-open
+
+    print("keep ratio:", keep_mask.count(True) / len(keep_mask))
+    return df.loc[keep_mask].reset_index(drop=True)
+
+
+
+
+
+
+def filter_duplicate(df, model_path):
+    # =========================
+    # load data
+    # =========================
+    data = df.to_dict(orient="records")
+
+    questions = [
+        sample["prompt"][1]["content"]
+        for sample in data
+    ]
+
+    # =========================
+    # load model
+    # =========================
+    device = "cpu"
+    model = SentenceTransformer(model_path, device=device)
+
+    # =========================
+    # encode all questions
+    # =========================
+    embeddings = model.encode(
+        questions,
+        batch_size=64,
+        convert_to_tensor=True,
+        normalize_embeddings=True,  # VERY important
+        show_progress_bar=True
+    )
+
+    # =========================
+    # similarity-based filtering (reverse order)
+    # =========================
+    threshold = 0.6
+
+    kept_indices = []
+    kept_embeddings = []
+
+    # ⚠️ 从后往前遍历
+    for idx in tqdm(range(len(embeddings) - 1, -1, -1)):
+        emb = embeddings[idx]
+
+        if len(kept_embeddings) == 0:
+            kept_indices.append(idx)
+            kept_embeddings.append(emb)
+            continue
+
+        sims = util.cos_sim(emb, torch.stack(kept_embeddings))[0]
+        max_sim = sims.max().item()
+
+        if max_sim < threshold:
+            kept_indices.append(idx)
+            kept_embeddings.append(emb)
+        # else: filtered out (因为后面已经有代表了)
+
+    # =========================
+    # restore original order (VERY IMPORTANT)
+    # =========================
+    kept_indices = sorted(kept_indices)
+
+    filtered_data = [data[i] for i in kept_indices]
+
+    print(f"Original size: {len(data)}")
+    print(f"Filtered size: {len(filtered_data)}")
+    print(f"Removed: {len(data) - len(filtered_data)}")
+
+    return pd.DataFrame(filtered_data)
 
 
 # nohup python question_generate_difficulty_aware.py > ../logs/question_generate_difficulty_aware_qwen4B.log 2>&1 &
@@ -93,98 +280,119 @@ if __name__ == "__main__":
     parser.add_argument("--api_key", type=str, default="dada")
     parser.add_argument("--base_url", type=str, default="http://127.0.0.1:6000/v1")
 
+    parser.add_argument("--judge_api_key", type=str, default="sk-kuFDU3HN9ni5EuDj6f23Ff355a0841Fb856eC63eCd27D947")
+    parser.add_argument("--judge_base_url", type=str, default="https://toollearning.cn/v1")
     parser.add_argument(
         "--save_path",
         type=str,
-        default="/share_data/data1/fanshengda/DEvo/data/solver_1212/qestioner_300_train.parquet",
+        default="/share_data/data1/fanshengda/DEvo/data/solver_1216/qestioner_250_train.parquet",
         help="输出 parquet 路径",
     )
     parser.add_argument(
         "--solver_save_path",
         type=str,
-        default="/share_data/data1/fanshengda/DEvo/data/solver_1212/solver_questioner_300_train.parquet",
+        default="/share_data/data1/fanshengda/DEvo/data/solver_1216/solver_questioner_250_train.parquet",
         help="输出 parquet 路径",
     )
     parser.add_argument(
+        "--sentence_transformer_path",
+        type=str,
+        default="/data3/workhome/fanshengda/models/sentence-transformers/all-MiniLM-L6-v2",
+        help="输出 parquet 路径",
+    )
+
+    parser.add_argument(
+        "--dup_solver_save_path",
+        type=str,
+        default="/share_data/data1/fanshengda/DEvo/data/solver_1216/solver_questioner_250_train_pruned.parquet",
+        help="输出 parquet 路径",
+    )
+
+    parser.add_argument(
         "--parquet_path",
         type=str,
-        default="/share_data/data1/fanshengda/DEvo/data/challenger_1212/train.parquet",
+        default="/share_data/data1/fanshengda/DEvo/data/challenger_1216/train.parquet",
         help="输入 parquet 路径",
     )
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=8,
+        default=32,
         help="并发线程数",
     )
 
     args = parser.parse_args()
 
-    # 初始化 client（一般线程安全，如果不放心也可以改成每线程一个 client）
-    client = OpenAI(
-        api_key=args.api_key,
-        base_url=args.base_url,
-    )
-
-    # 读 parquet
-    df = pd.read_parquet(args.parquet_path)
-
-
-    # df = df.head(100)
-    if "prompt" not in df.columns:
-        raise ValueError(
-            f"'prompt' column not found in dataframe columns: {df.columns.tolist()}"
-        )
-
-    # 准备任务列表：每个元素是 (idx, messages)
-    # 其中 messages 是 openai chat 格式的 list[dict]
-    tasks = []
-    for idx, row in df.iterrows():
-        prompt = row["prompt"]
-
-        # 如果 parquet 里已经是 [{'role': 'user', 'content': '...'}] 这样的列表，直接用
-        if isinstance(prompt, list):
-            messages = prompt
-        else:
-            # 否则认为是字符串，包成一条 user message
-            messages = [{"role": "user", "content": str(prompt)}]
-
-        tasks.append((idx, messages))
-
-    results_dict = {}  # idx -> (accepted, decision)
-
-    # 初始化结果列，避免有些 idx 没跑到时报错
-    df["accepted"] = False
-    df["decision"] = None
-
-    with ThreadPoolExecutor(max_workers=args.num_workers) as executor:
-        futures = {
-            executor.submit(
-                process_one, idx, messages, client, args.model
-            ): idx
-            for idx, messages in tasks
-        }
-
-        for future in tqdm(
-            as_completed(futures),
-            total=len(futures),
-            desc="Querying model",
-        ):
-            idx = futures[future]
-            try:
-                _idx, accepted, decision = future.result()
-                results_dict[_idx] = (accepted, decision)
-            except Exception as e:
-                print(f"[ERROR] Future for idx={idx} raised exception: {e}")
-                results_dict[idx] = (False, {"status": "error", "raw": None})
-
-    # 写回到 df
-    for idx, (accepted, decision) in results_dict.items():
-        df.at[idx, "accepted"] = accepted
-        # 保存为 JSON 字符串，方便后续解析
-        df.at[idx, "decision"] = json.dumps(decision, ensure_ascii=False)
-
-    df.to_parquet(args.save_path, index=False)
+    # # 确保所有输出路径的父目录存在
+    # ensure_parent_dir(args.save_path)
+    # ensure_parent_dir(args.solver_save_path)
+    # ensure_parent_dir(args.dup_solver_save_path)
+    #
+    # # 初始化 client（一般线程安全，如果不放心也可以改成每线程一个 client）
+    # client = OpenAI(
+    #     api_key=args.api_key,
+    #     base_url=args.base_url,
+    # )
+    #
+    # # 读 parquet
+    # df = pd.read_parquet(args.parquet_path)
+    #
+    #
+    # # df = df.head(100)
+    # if "prompt" not in df.columns:
+    #     raise ValueError(
+    #         f"'prompt' column not found in dataframe columns: {df.columns.tolist()}"
+    #     )
+    #
+    # # 准备任务列表：每个元素是 (idx, messages)
+    # # 其中 messages 是 openai chat 格式的 list[dict]
+    # tasks = []
+    # for idx, row in df.iterrows():
+    #     prompt = row["prompt"]
+    #
+    #     # 如果 parquet 里已经是 [{'role': 'user', 'content': '...'}] 这样的列表，直接用
+    #     if isinstance(prompt, list):
+    #         messages = prompt
+    #     else:
+    #         # 否则认为是字符串，包成一条 user message
+    #         messages = [{"role": "user", "content": str(prompt)}]
+    #
+    #     tasks.append((idx, messages))
+    #
+    # results_dict = {}  # idx -> (accepted, decision)
+    #
+    # # 初始化结果列，避免有些 idx 没跑到时报错
+    # df["accepted"] = False
+    # df["decision"] = None
+    #
+    # with ThreadPoolExecutor(max_workers=args.num_workers) as executor:
+    #     futures = {
+    #         executor.submit(
+    #             process_one, idx, messages, client, args.model
+    #         ): idx
+    #         for idx, messages in tasks
+    #     }
+    #
+    #     for future in tqdm(
+    #         as_completed(futures),
+    #         total=len(futures),
+    #         desc="Querying model",
+    #     ):
+    #         idx = futures[future]
+    #         try:
+    #             _idx, accepted, decision = future.result()
+    #             results_dict[_idx] = (accepted, decision)
+    #         except Exception as e:
+    #             print(f"[ERROR] Future for idx={idx} raised exception: {e}")
+    #             results_dict[idx] = (False, {"status": "error", "raw": None})
+    #
+    # # 写回到 df
+    # for idx, (accepted, decision) in results_dict.items():
+    #     df.at[idx, "accepted"] = accepted
+    #     # 保存为 JSON 字符串，方便后续解析
+    #     df.at[idx, "decision"] = json.dumps(decision, ensure_ascii=False)
+    #
+    # df.to_parquet(args.save_path, index=False)
     # print(f"Saved results to {args.save_path}")
     df = pd.read_parquet(args.save_path)
 
@@ -242,9 +450,31 @@ if __name__ == "__main__":
     print(bad[["prompt"]].head(5))
     print(bad["prompt"].apply(type).value_counts())
 
+    tqdm.pandas(desc="Scanning for invalid Unicode")
 
+    bad_mask = solver_df.progress_apply(
+        lambda row: any(has_surrogate_in_anything(v) for v in row.values),
+        axis=1
+    )
 
+    num_bad = int(bad_mask.sum())
+    print(f"Dropped {num_bad} rows ({num_bad / len(solver_df):.4%}) due to invalid Unicode")
+
+    solver_df = solver_df.loc[~bad_mask].reset_index(drop=True)
 
     solver_df.to_parquet(args.solver_save_path, index=False)
     print(f"Saved solver results to {args.solver_save_path}, len(solver_df): {len(solver_df)}")
 
+
+    solver_df = pd.read_parquet(args.solver_save_path)
+
+    solver_df = filter_duplicate(solver_df, args.sentence_transformer_path)
+
+    print(Counter([sample['extra_info']['difficulty_id'] for sample in solver_df.to_dict(orient="records")]))
+    assert_curriculum_order(solver_df)
+
+    # solver_df = filter_unrelative(solver_df, base_url=args.judge_base_url, api_key=args.judge_api_key)
+    # assert_curriculum_order(solver_df)
+
+    solver_df.to_parquet(args.dup_solver_save_path, index=False)
+    print(f"Saved solver results to {args.dup_solver_save_path}, len(pruned_solver_df): {len(solver_df)}")

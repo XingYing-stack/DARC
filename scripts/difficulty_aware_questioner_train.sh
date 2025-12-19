@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# nohup bash scripts/difficulty_aware_questioner_train.sh /share_data/data1/models/Qwen/Qwen3-4B-Base /share_data/data1/models/Qwen/Qwen3-4B-Base qwen3-4b-difficulty_aware_questioner_1212 > /data3/workhome/fanshengda/DEvo/logs/difficulty_aware_questioner_train_1212.log 2>&1 &
+# nohup bash scripts/difficulty_aware_questioner_train.sh /share_data/data1/models/Qwen/Qwen3-4B-Base /share_data/data1/models/Qwen/Qwen3-4B-Base qwen3-4b-difficulty_aware_questioner_1216 > /data3/workhome/fanshengda/DEvo/logs/difficulty_aware_questioner_train_1216.log 2>&1 &
 export STORAGE_PATH="/share_data/data1/fanshengda/DEvo/ckpts"
 export HUGGINGFACENAME="AnIdealRing"
 export HF_ENDPOINT=https://hf-mirror.com
@@ -8,9 +8,9 @@ export PYTHONPATH=/data3/workhome/fanshengda/DEvo:$PYTHONPATH
 export INJECT_EXTRA_INFO_TO_GROUND_TRUTH=1
 export VLLM_N_CANDIDATES=10
 export USE_TEXT_SOLVER_FOR_ANSWER=1
-
-export ENABLE_DIFFICULTY_RANKING=0
-export DEEPSEEK_MODEL="gpt-5-mini"
+export ENABLE_COPY_PENALTY=1
+export ENABLE_DIFFICULTY_RANKING=1
+export DEEPSEEK_MODEL="gpt-4o-mini"
 export DEEPSEEK_API_URL="https://toollearning.cn/v1"
 export DEEPSEEK_API_KEY="sk-abHpUvVt7LLnmEyxCe17021d8e774e97Bd7aA9Bc4f2b1076"
 
@@ -35,8 +35,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m verl.trainer.main \
     config=examples/config.yaml \
     data.max_prompt_length=10000 \
     data.max_response_length=3000 \
-    data.train_files=/share_data/data1/fanshengda/DEvo/data/challenger_1212 \
-    data.val_files=/share_data/data1/fanshengda/DEvo/data/challenger_1212 \
+    data.train_files=/share_data/data1/fanshengda/DEvo/data/challenger_1216 \
+    data.val_files=/share_data/data1/fanshengda/DEvo/data/challenger_1216 \
     data.shuffle=false \
     data.prompt_key=prompt \
     data.answer_key=reward_model \

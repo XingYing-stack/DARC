@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import ast
 from collections import Counter
 from typing import Any, Dict, List, Tuple
 
@@ -58,6 +59,24 @@ def _parse_reward_model(item: Any) -> Dict[str, Any]:
     For self_vote: {"style": "self_vote"} (additional fields are ignored here).
     """
     if isinstance(item, dict):
+        # When `INJECT_EXTRA_INFO_TO_GROUND_TRUTH=1`, dataset wraps original answer_key
+        # value as: {"ground_truth": <original>, "extra_info": ...}. Unwrap it here so
+        # rule-mode can still read {"style": "...", "ground_truth": "..."}.
+        if "style" not in item and "ground_truth" in item:
+            extra_info = item.get("extra_info")
+            parsed = _parse_reward_model(item.get("ground_truth"))
+            if extra_info is not None and "extra_info" not in parsed:
+                parsed = parsed.copy()
+                parsed["extra_info"] = extra_info
+            return parsed
+        # Some datasets may store the structure under a different key.
+        if "reward_model" in item and ("style" not in item or "ground_truth" not in item):
+            extra_info = item.get("extra_info")
+            parsed = _parse_reward_model(item.get("reward_model"))
+            if extra_info is not None and "extra_info" not in parsed:
+                parsed = parsed.copy()
+                parsed["extra_info"] = extra_info
+            return parsed
         return item
     if isinstance(item, str):
         s = item.strip()
@@ -65,6 +84,13 @@ def _parse_reward_model(item: Any) -> Dict[str, Any]:
             try:
                 return json.loads(s)
             except Exception:
+                # common in parquet/csv: python dict repr with single quotes
+                try:
+                    obj = ast.literal_eval(s)
+                    if isinstance(obj, dict):
+                        return obj
+                except Exception:
+                    pass
                 return {"style": "rule", "ground_truth": s}
         # treat plain string as direct ground truth
         return {"style": "rule", "ground_truth": s}

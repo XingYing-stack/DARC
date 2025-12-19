@@ -17,7 +17,8 @@ def main(args):
     model = vllm.LLM(
         model=args.model,
         tokenizer=args.model,
-        gpu_memory_utilization=0.85
+        gpu_memory_utilization=0.85,
+        disable_cascade_attn=True,
     )
     sample_params = vllm.SamplingParams(
         max_tokens=4096,

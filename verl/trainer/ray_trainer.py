@@ -134,7 +134,13 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.KLController, kl_penal
     return data, metrics
 
 
-def compute_advantage(data: DataProto, adv_estimator: AdvantageEstimator, gamma: float = 1.0, lam: float = 1.0):
+def compute_advantage(
+    data: DataProto,
+    adv_estimator: AdvantageEstimator,
+    gamma: float = 1.0,
+    lam: float = 1.0,
+    norm_adv_by_std_in_grpo: bool = True,
+):
     token_level_rewards = data.batch["token_level_rewards"]
     response_mask = data.batch["response_mask"]
     index = data.non_tensor_batch["uid"]
@@ -144,7 +150,12 @@ def compute_advantage(data: DataProto, adv_estimator: AdvantageEstimator, gamma:
             token_level_rewards, values, response_mask, gamma, lam
         )
     elif adv_estimator == AdvantageEstimator.GRPO:
-        advantages, returns = core_algos.compute_grpo_outcome_advantage(token_level_rewards, response_mask, index)
+        advantages, returns = core_algos.compute_grpo_outcome_advantage(
+            token_level_rewards,
+            response_mask,
+            index,
+            norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+        )
     elif adv_estimator == AdvantageEstimator.REINFORCE_PLUS_PLUS:
         advantages, returns = core_algos.compute_reinforce_plus_plus_outcome_advantage(
             token_level_rewards, response_mask, gamma
@@ -809,6 +820,7 @@ class RayPPOTrainer:
                             adv_estimator=self.config.algorithm.adv_estimator,
                             gamma=self.config.algorithm.gamma,
                             lam=self.config.algorithm.lam,
+                            norm_adv_by_std_in_grpo=self.config.algorithm.norm_adv_by_std_in_grpo,
                         )
 
                         # Optionally mask out samples with low self-vote confidence by zeroing advantages
