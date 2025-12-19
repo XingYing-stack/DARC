@@ -6,6 +6,10 @@ import argparse
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
+def _model_suffix(model_path: str, n: int = 20) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(model_path))
+    return safe[-n:] if len(safe) > n else safe
+
 def extract_last_boxed(text):
     pattern = r'\\boxed\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}'
     matches = list(re.finditer(pattern, text))
@@ -132,11 +136,14 @@ def evaluate_correctness(sample: str, reference: str) -> bool:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True, help="Path to the model directory")
-    parser.add_argument("--output_file", type=str, default="outputs.json", help="File to save results")
+    parser.add_argument("--output_file", type=str, default=None, help="File to save results")
     args = parser.parse_args()
+
+    if not args.output_file:
+        args.output_file = f"outputs_bbeh_{_model_suffix(args.model_path)}.json"
     
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    llm = LLM(model=args.model_path, tensor_parallel_size=4,gpu_memory_utilization=0.85)
+    llm = LLM(model=args.model_path, tensor_parallel_size=4,gpu_memory_utilization=0.8)
     dataset = datasets.load_dataset('MrLight/bbeh-eval')
     categories = sorted(list(set(dataset['train']['task'])))
     print("Categories:", categories)
@@ -178,8 +185,13 @@ if __name__ == "__main__":
             
         print(f"{category}: {per_category_accuracy[category][0] / (per_category_accuracy[category][0] + per_category_accuracy[category][1]):.4f}")
     
-    with open(args.output_file, 'w') as f:
-        json.dump(answers, f, indent=2)
-    with open('final_results.jsonl', 'a') as f:
-        json.dump({"dataset": "bbeh", "model": args.model_path, "accuracy": round(success / (success + fail)*100, 2)}, f, indent=2)
+    with open(args.output_file, "w", encoding="utf-8") as f:
+        json.dump(answers, f, indent=2, ensure_ascii=False)
+    with open("final_results.jsonl", "a", encoding="utf-8") as f:
+        json.dump(
+            {"dataset": "bbeh", "model": args.model_path, "accuracy": round(success / (success + fail) * 100, 2)},
+            f,
+            ensure_ascii=False,
+        )
+        f.write("\n")
     print("Overall Accuracy:", success / (success + fail))

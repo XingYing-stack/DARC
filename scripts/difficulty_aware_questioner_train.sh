@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# nohup bash scripts/difficulty_aware_questioner_train.sh /share_data/data1/models/Qwen/Qwen3-4B-Base /share_data/data1/models/Qwen/Qwen3-4B-Base qwen3-4b-difficulty_aware_questioner_1216 > /data3/workhome/fanshengda/DEvo/logs/difficulty_aware_questioner_train_1216.log 2>&1 &
+# nohup bash scripts/difficulty_aware_questioner_train.sh /share_data/data1/models/Qwen/Qwen3-4B-Base /share_data/data1/models/Qwen/Qwen3-4B-Base qwen3-4b-difficulty_aware_questioner_1219 > /data3/workhome/fanshengda/DEvo/logs/difficulty_aware_questioner_train_1219.log 2>&1 &
 export STORAGE_PATH="/share_data/data1/fanshengda/DEvo/ckpts"
 export HUGGINGFACENAME="AnIdealRing"
 export HF_ENDPOINT=https://hf-mirror.com
@@ -33,10 +33,10 @@ echo "Start training difficulty_aware questioner: $questioner_model_path -> $sav
 
 CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m verl.trainer.main \
     config=examples/config.yaml \
-    data.max_prompt_length=10000 \
+    data.max_prompt_length=13000 \
     data.max_response_length=3000 \
-    data.train_files=/share_data/data1/fanshengda/DEvo/data/challenger_1216 \
-    data.val_files=/share_data/data1/fanshengda/DEvo/data/challenger_1216 \
+    data.train_files=/share_data/data1/fanshengda/DEvo/data/challenger_1219 \
+    data.val_files=/share_data/data1/fanshengda/DEvo/data/challenger_1219 \
     data.shuffle=false \
     data.prompt_key=prompt \
     data.answer_key=reward_model \

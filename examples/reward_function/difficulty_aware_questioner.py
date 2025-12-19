@@ -226,7 +226,7 @@ def extract_question_and_answer(predict: str) -> Tuple[Optional[str], Optional[s
     Required top-level keys (exact match):
     {"analysis", "question", "intermediate_results", "answer", "solving_time_estimate", "required_concepts", "potential_errors"}
 
-    Returns the plain question string and the numeric answer coerced to string.
+    Returns the plain question string and the answer coerced to string.
     On any violation, returns (None, None).
     """
 
@@ -272,9 +272,10 @@ def extract_question_and_answer(predict: str) -> Tuple[Optional[str], Optional[s
         print("[format] 'question' must be a non-empty string.")
         return None, None
 
-    # Answer must be numeric (int or float)
-    if not isinstance(answer_val, (int, float)):
-        print("[format] 'answer' must be a numeric JSON value (int or float).")
+    # Answer must be a JSON primitive (int/float/string). Type-specific validation is
+    # handled later using `answer_type`.
+    if not isinstance(answer_val, (int, float, str)):
+        print("[format] 'answer' must be a JSON int/float/string value.")
         return None, None
 
     return question.strip(), str(answer_val)
@@ -447,6 +448,8 @@ def validate_answer_type(answer: str, answer_type: Optional[str]) -> bool:
         return bool(re.fullmatch(r"[-+]?\d+", cleaned))
     if normalized == "float":
         return bool(re.fullmatch(r"[-+]?\d+\.\d+", cleaned))
+    if normalized == "categorical":
+        return normalize_categorical_answer(cleaned) is not None
     if normalized == "string":
         if not re.fullmatch(r"[A-Za-z]+(?: [A-Za-z]+){0,2}", cleaned):
             return False
@@ -457,6 +460,50 @@ def validate_answer_type(answer: str, answer_type: Optional[str]) -> bool:
         return bool(cleaned and EXPRESSION_PATTERN.fullmatch(cleaned) and any(ch in cleaned for ch in "+-*/^="))
 
     return True
+
+
+def normalize_categorical_answer(answer: str) -> Optional[str]:
+    """Normalize multiple-choice answers to a single uppercase letter A-J.
+
+    Accepts common wrappers like:
+    - "A", "a", "(A)", "A.", "Answer: A", "\\text{A}", "\\mathrm{A}"
+    Returns None if it cannot unambiguously extract exactly one option.
+    """
+    if not isinstance(answer, str):
+        return None
+    s = answer.strip()
+    if not s:
+        return None
+
+    s = s.upper()
+    # Unwrap common LaTeX wrappers like \text{A}, \mathrm{A}, \mathbf{A}
+    for _ in range(3):
+        s_new = re.sub(r"\\(?:TEXT|MATHRM|MATHBF|BM|BOLD|BOLDFACE|RM|BF)\s*\{\s*([A-J])\s*\}", r"\1", s)
+        if s_new == s:
+            break
+        s = s_new
+
+    # Quick strict matches
+    if re.fullmatch(r"[A-J]", s):
+        return s
+    if re.fullmatch(r"\(\s*[A-J]\s*\)", s):
+        return re.sub(r"[()\s]", "", s)
+    if re.fullmatch(r"[A-J][\.\)\:\,;]\s*", s):
+        return s[0]
+
+    # Remove punctuation/braces to ease extraction.
+    s = re.sub(r"[{}\[\]()<>\t\r\n]", " ", s)
+    s = re.sub(r"[^A-Z0-9 ]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s:
+        return None
+
+    # Extract exactly one distinct A-J token.
+    hits = re.findall(r"\b([A-J])\b", s)
+    distinct = sorted(set(hits))
+    if len(distinct) == 1:
+        return distinct[0]
+    return None
 
 
 def difficulty_reward(solver_score: Optional[float], difficulty_id: Optional[int]) -> float:
@@ -696,6 +743,8 @@ def compute_score(
                 continue
 
             difficulty_id, answer_type = parse_ground_truth(ground_truths[idx])
+            if answer_type and isinstance(answer_type, str) and answer_type.lower() == "categorical":
+                answer = normalize_categorical_answer(answer) or answer
             if answer_type and not validate_answer_type(answer, answer_type):
                 continue
             if difficulty_id is None:
@@ -722,6 +771,8 @@ def compute_score(
             did = int(meta["difficulty_id"])  # type: ignore
             atype = meta.get("answer_type")  # Optional[str]
             maj_ans = (ans.get("answer") or "").strip() if isinstance(ans, dict) else ""
+            if isinstance(atype, str) and atype.lower() == "categorical":
+                maj_ans = normalize_categorical_answer(maj_ans) or maj_ans
             # Validate against requested answer_type, if any
             if atype and not validate_answer_type(maj_ans, atype):
                 # leave INVALID_SCORE
@@ -737,6 +788,12 @@ def compute_score(
             solver_meta.append({"index": idx, "difficulty_id": did})
 
     solver_results = generate_results(solver_payload) if solver_payload else []
+
+    # Ensure we never leave `None` entries behind (e.g., failed answer_type validation
+    # in the USE_TEXT_SOLVER_FOR_ANSWER path). Downstream aggregation expects dicts.
+    for i, s in enumerate(scores):
+        if s is None:
+            scores[i] = INVALID_SCORE.copy()
 
     # relation check payloads
     relation_payload: List[Dict[str, str]] = []

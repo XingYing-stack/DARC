@@ -6,6 +6,10 @@ import argparse
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
+def _model_suffix(model_path: str, n: int = 20) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(model_path))
+    return safe[-n:] if len(safe) > n else safe
+
 def extract_last_boxed(text):
     pattern = r'\\boxed\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}'
     matches = list(re.finditer(pattern, text))
@@ -62,11 +66,14 @@ def get_prediction(output):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True, help="Path to the model directory")
-    parser.add_argument("--output_file", type=str, default="outputs.json", help="File to save results")
+    parser.add_argument("--output_file", type=str, default=None, help="File to save results")
     args = parser.parse_args()
+
+    if not args.output_file:
+        args.output_file = f"outputs_mmlupro_{_model_suffix(args.model_path)}.json"
     
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    llm = LLM(model=args.model_path, tensor_parallel_size=4,gpu_memory_utilization=0.85)
+    llm = LLM(model=args.model_path, tensor_parallel_size=4,gpu_memory_utilization=0.8)
     dataset = datasets.load_dataset('TIGER-Lab/MMLU-Pro')
     
     categories = ['computer science', 'math', 'chemistry', 'engineering', 'law', 'biology',
@@ -109,15 +116,15 @@ if __name__ == "__main__":
             else:
                 fail += 1
                 per_category_accuracy[category][1] += 1
-            
+        
         # Print category accuracy as soon as it's computed
         total_cat = per_category_accuracy[category][0] + per_category_accuracy[category][1]
         cat_accuracy = per_category_accuracy[category][0] / total_cat if total_cat > 0 else 0.0
         print(f"{category}: {cat_accuracy:.4f}")
     
     # Save all the answers in a JSON file
-    with open(args.output_file, 'w') as f:
-        json.dump(answers, f, indent=2)
+    with open(args.output_file, "w", encoding="utf-8") as f:
+        json.dump(answers, f, indent=2, ensure_ascii=False)
     
     # Calculate per-category report, micro average, and macro average
     print("\n----- Accuracy Report -----")
@@ -135,8 +142,13 @@ if __name__ == "__main__":
     total_predictions = success + fail
     micro_avg = success / total_predictions if total_predictions > 0 else 0.0
     print(f"\nMicro Average Accuracy: {micro_avg*100:.2f}%")
-    with open('final_results.jsonl', 'a') as f:
-        json.dump({"dataset": "mmlupro", "model": args.model_path, "accuracy": round(micro_avg*100, 2)}, f, indent=2)
+    with open("final_results.jsonl", "a", encoding="utf-8") as f:
+        json.dump(
+            {"dataset": "mmlupro", "model": args.model_path, "accuracy": round(micro_avg * 100, 2)},
+            f,
+            ensure_ascii=False,
+        )
+        f.write("\n")
     valid_categories = [cat for cat in categories if (per_category_accuracy[cat][0] + per_category_accuracy[cat][1] > 0)]
     if valid_categories:
         macro_avg = sum(category_accuracy_report[cat] for cat in valid_categories) / len(valid_categories)
