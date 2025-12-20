@@ -734,7 +734,7 @@ def compute_score(
                 continue
             # extract text for answer derivation (may be empty if unavailable)
             gt_text = extract_text_from_ground_truth(ground_truths[idx]) or ""
-            answer_payload.append({"text": gt_text, "question": question})
+            answer_payload.append({"text": gt_text, "question": question, "answer_type": answer_type})
             answer_meta.append({"index": idx, "difficulty_id": difficulty_id, "answer_type": answer_type, "question": question, "text": gt_text})
             scores[idx] = None  # mark for later fill
         else:
@@ -757,7 +757,7 @@ def compute_score(
                 if at == "boolean":
                     normalized_answer = answer.lower()
 
-            solver_payload.append({"question": question, "answer": normalized_answer})
+            solver_payload.append({"question": question, "answer": normalized_answer, "answer_type": answer_type})
             solver_meta.append({"index": idx, "difficulty_id": difficulty_id})
             scores[idx] = None  # mark for later fill
 
@@ -784,6 +784,7 @@ def compute_score(
             solver_payload.append({
                 "question": str(meta.get("question", "")),
                 "answer": normalized_answer,
+                "answer_type": atype,
             })
             solver_meta.append({"index": idx, "difficulty_id": did})
 

@@ -19,6 +19,7 @@ import vllm
 import argparse
 import json
 import os
+import re
 import threading
 import time
 import torch
@@ -80,6 +81,38 @@ def _top_counts(d: dict, k: int = 3):
         return [( _trunc(ans, 60), cnt) for ans, cnt in items]
     except Exception:
         return []
+
+CATEGORICAL_INSTRUCTION = (
+    "\nPlease reason step by step, and put your final answer option within \\boxed{}."
+    " Only put the letter in the box, e.g. \\boxed{A}. There is only one correct answer."
+)
+
+def _chat_to_prompt_fallback(chat: list[dict]) -> str:
+    """Convert chat messages to a plain-text prompt when no chat_template is available."""
+    lines = []
+    for msg in chat:
+        role = (msg.get("role") or "user").strip()
+        content = msg.get("content") or ""
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def _looks_like_categorical_question(question: str) -> bool:
+    """Heuristic detector for multiple-choice questions."""
+    if not isinstance(question, str) or not question.strip():
+        return False
+    # Look for 3+ distinct options among A-J in line-start patterns: "A." / "B)" etc.
+    hits = re.findall(r"(?m)^\s*([A-J])[\.\)]\s+", question.upper())
+    return len(set(hits)) >= 3
+
+
+def _is_categorical_item(item: dict, question: str, golden_answer: str | None = None) -> bool:
+    at = (item.get("answer_type") or "").strip().lower() if isinstance(item, dict) else ""
+    if at == "categorical":
+        return True
+    if isinstance(golden_answer, str) and re.fullmatch(r"[A-J]", golden_answer.strip().upper() or ""):
+        return True
+    return _looks_like_categorical_question(question)
 
 # ---------------------- GPU Idle Utilization Thread ---------------------- #
 # (This section remains unchanged)
@@ -154,15 +187,19 @@ def hello():
 
     # (Data preparation logic remains unchanged)
     valid_indices, valid_questions, valid_answers, valid_chats = [], [], [], []
-    for i, (q, a) in enumerate(zip(questions, answers)):
+    for i, (q, a, item) in enumerate(zip(questions, answers, data)):
         if q and a:
             valid_indices.append(i)
             valid_questions.append(q)
             valid_answers.append(a)
-            valid_chats.append([
-                {'role': 'system', 'content': 'Please reason step by step, and put your final answer within \\boxed{}.'},
-                {'role': 'user',   'content': q}
-            ])
+            if _is_categorical_item(item, q, golden_answer=a):
+                query = q + CATEGORICAL_INSTRUCTION
+                valid_chats.append([{'role': 'user', 'content': query}])
+            else:
+                valid_chats.append([
+                    {'role': 'system', 'content': 'Please reason step by step, and put your final answer within \\boxed{}.'},
+                    {'role': 'user',   'content': q}
+                ])
     print('[server] Valid chat prompts have been prepared.')
     print('[server] Gen config:',
           f"n_candidates={sample_params.n}",
@@ -181,10 +218,7 @@ def hello():
                 for chat in valid_chats
             ]
         else:
-            prompts = [
-                'system: ' + chat[0]['content'] + '\n' + 'user: ' + chat[1]['content']
-                for chat in valid_chats
-            ]
+            prompts = [_chat_to_prompt_fallback(chat) for chat in valid_chats]
         t0 = time.time()
         responses = model.generate(prompts, sampling_params=sample_params, use_tqdm=True)
         dt = time.time() - t0
@@ -377,10 +411,14 @@ def answer_from_text():
             f"Context:\n{txt}\n\n"
             f"Question: {q}"
         )
-        chats.append([
-            {'role': 'system', 'content': 'Please reason step by step, and put your final answer within \\boxed{}.'},
-            {'role': 'user',   'content': user_content},
-        ])
+        if _is_categorical_item(item, q):
+            query = user_content + CATEGORICAL_INSTRUCTION
+            chats.append([{'role': 'user', 'content': query}])
+        else:
+            chats.append([
+                {'role': 'system', 'content': 'Please reason step by step, and put your final answer within \\boxed{}.'},
+                {'role': 'user',   'content': user_content},
+            ])
         valid_items.append({'text': txt, 'question': q})
 
     # Build prompts
@@ -392,10 +430,7 @@ def answer_from_text():
                 for chat in chats
             ]
         else:
-            prompts = [
-                'system: ' + chat[0]['content'] + '\n' + 'user: ' + chat[1]['content']
-                for chat in chats
-            ]
+            prompts = [_chat_to_prompt_fallback(chat) for chat in chats]
     else:
         prompts = []
 

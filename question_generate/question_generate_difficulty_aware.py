@@ -13,6 +13,28 @@ from tqdm import tqdm
 from collections import Counter
 import os
 
+CATEGORICAL_INSTRUCTION = (
+    "\nPlease reason step by step, and put your final answer option within \\boxed{}."
+    " Only put the letter in the box, e.g. \\boxed{A}. There is only one correct answer."
+)
+
+
+def _normalize_answer_type(value) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().lower()
+
+
+def _infer_answer_type(sample: dict) -> str:
+    at = _normalize_answer_type(sample.get("answer_type"))
+    if at:
+        return at
+    ans = sample.get("answer")
+    if isinstance(ans, str) and len(ans.strip()) == 1 and ans.strip().upper() in set("ABCDEFGHIJ"):
+        return "categorical"
+    return ""
+
+
 def process_one(idx, messages, client: OpenAI, model_name: str):
     """
     单条调用 openai 接口。
@@ -68,17 +90,44 @@ def _gen_single_item(idx, sample):
     assert isinstance(sample["question"], str), \
         f"question must be str, got {type(sample['question'])}"
 
+    answer_type = _infer_answer_type(sample)
+
+    if answer_type == "categorical":
+        prompt = [
+            {"role": "user", "content": sample["question"] + CATEGORICAL_INSTRUCTION},
+        ]
+        text_prompt = [
+            {
+                "role": "user",
+                "content": (
+                    "Read the following context and answer the question.\n\n"
+                    f"Context:\n{sample['text']}\n\n"
+                    f"Question: {sample['question']}"
+                    + CATEGORICAL_INSTRUCTION
+                ),
+            },
+        ]
+    else:
+        prompt = [
+            {"role": "system", "content": r"Please reason step by step, and put your final answer within \boxed{}."},
+            {"role": "user", "content": sample["question"]},
+        ]
+        text_prompt = [
+            {"role": "system", "content": "Please reason step by step, and put your final answer within \\boxed{}."},
+            {
+                "role": "user",
+                "content": (
+                    "Read the following context and answer the question.\n\n"
+                    f"Context:\n{sample['text']}\n\n"
+                    f"Question: {sample['question']}"
+                ),
+            },
+        ]
+
     return {
         "data_source": "solver",
-        "prompt":  [
-            {"role": "system", "content": r"Please reason step by step, and put your final answer within \boxed{}."},
-            {"role": "user", "content": sample['question']},],
-        "text_prompt": [
-            {'role': 'system', 'content': 'Please reason step by step, and put your final answer within \\boxed{}.'},
-            {'role': 'user', 'content': "Read the following context and answer the question.\n\n"
-            f"Context:\n{sample['text']}\n\n"
-            f"Question: {sample['question']}"},
-        ],
+        "prompt": prompt,
+        "text_prompt": text_prompt,
         "ability": "math",
         "reward_model": {"style": "rule", "ground_truth": str(sample['answer'])},
         "extra_info": {
@@ -87,6 +136,7 @@ def _gen_single_item(idx, sample):
             "text": sample['text'],
             # "analysis": str(sample['analysis']),
             'difficulty_id': sample['difficulty_id'],
+            "answer_type": answer_type,
             # 'solving_time_estimate':sample['solving_time_estimate'],
         },
     }
@@ -323,77 +373,77 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # # 确保所有输出路径的父目录存在
-    # ensure_parent_dir(args.save_path)
-    # ensure_parent_dir(args.solver_save_path)
-    # ensure_parent_dir(args.dup_solver_save_path)
-    #
-    # # 初始化 client（一般线程安全，如果不放心也可以改成每线程一个 client）
-    # client = OpenAI(
-    #     api_key=args.api_key,
-    #     base_url=args.base_url,
-    # )
-    #
-    # # 读 parquet
-    # df = pd.read_parquet(args.parquet_path)
-    #
-    #
-    # # df = df.head(100)
-    # if "prompt" not in df.columns:
-    #     raise ValueError(
-    #         f"'prompt' column not found in dataframe columns: {df.columns.tolist()}"
-    #     )
-    #
-    # # 准备任务列表：每个元素是 (idx, messages)
-    # # 其中 messages 是 openai chat 格式的 list[dict]
-    # tasks = []
-    # for idx, row in df.iterrows():
-    #     prompt = row["prompt"]
-    #
-    #     # 如果 parquet 里已经是 [{'role': 'user', 'content': '...'}] 这样的列表，直接用
-    #     if isinstance(prompt, list):
-    #         messages = prompt
-    #     else:
-    #         # 否则认为是字符串，包成一条 user message
-    #         messages = [{"role": "user", "content": str(prompt)}]
-    #
-    #     tasks.append((idx, messages))
-    #
-    # results_dict = {}  # idx -> (accepted, decision)
-    #
-    # # 初始化结果列，避免有些 idx 没跑到时报错
-    # df["accepted"] = False
-    # df["decision"] = None
-    #
-    # with ThreadPoolExecutor(max_workers=args.num_workers) as executor:
-    #     futures = {
-    #         executor.submit(
-    #             process_one, idx, messages, client, args.model
-    #         ): idx
-    #         for idx, messages in tasks
-    #     }
-    #
-    #     for future in tqdm(
-    #         as_completed(futures),
-    #         total=len(futures),
-    #         desc="Querying model",
-    #     ):
-    #         idx = futures[future]
-    #         try:
-    #             _idx, accepted, decision = future.result()
-    #             results_dict[_idx] = (accepted, decision)
-    #         except Exception as e:
-    #             print(f"[ERROR] Future for idx={idx} raised exception: {e}")
-    #             results_dict[idx] = (False, {"status": "error", "raw": None})
-    #
-    # # 写回到 df
-    # for idx, (accepted, decision) in results_dict.items():
-    #     df.at[idx, "accepted"] = accepted
-    #     # 保存为 JSON 字符串，方便后续解析
-    #     df.at[idx, "decision"] = json.dumps(decision, ensure_ascii=False)
-    #
-    # df.to_parquet(args.save_path, index=False)
-    # print(f"Saved results to {args.save_path}")
+    # 确保所有输出路径的父目录存在
+    ensure_parent_dir(args.save_path)
+    ensure_parent_dir(args.solver_save_path)
+    ensure_parent_dir(args.dup_solver_save_path)
+
+    # 初始化 client（一般线程安全，如果不放心也可以改成每线程一个 client）
+    client = OpenAI(
+        api_key=args.api_key,
+        base_url=args.base_url,
+    )
+
+    # 读 parquet
+    df = pd.read_parquet(args.parquet_path)
+
+
+    # df = df.head(100)
+    if "prompt" not in df.columns:
+        raise ValueError(
+            f"'prompt' column not found in dataframe columns: {df.columns.tolist()}"
+        )
+
+    # 准备任务列表：每个元素是 (idx, messages)
+    # 其中 messages 是 openai chat 格式的 list[dict]
+    tasks = []
+    for idx, row in df.iterrows():
+        prompt = row["prompt"]
+
+        # 如果 parquet 里已经是 [{'role': 'user', 'content': '...'}] 这样的列表，直接用
+        if isinstance(prompt, list):
+            messages = prompt
+        else:
+            # 否则认为是字符串，包成一条 user message
+            messages = [{"role": "user", "content": str(prompt)}]
+
+        tasks.append((idx, messages))
+
+    results_dict = {}  # idx -> (accepted, decision)
+
+    # 初始化结果列，避免有些 idx 没跑到时报错
+    df["accepted"] = False
+    df["decision"] = None
+
+    with ThreadPoolExecutor(max_workers=args.num_workers) as executor:
+        futures = {
+            executor.submit(
+                process_one, idx, messages, client, args.model
+            ): idx
+            for idx, messages in tasks
+        }
+
+        for future in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc="Querying model",
+        ):
+            idx = futures[future]
+            try:
+                _idx, accepted, decision = future.result()
+                results_dict[_idx] = (accepted, decision)
+            except Exception as e:
+                print(f"[ERROR] Future for idx={idx} raised exception: {e}")
+                results_dict[idx] = (False, {"status": "error", "raw": None})
+
+    # 写回到 df
+    for idx, (accepted, decision) in results_dict.items():
+        df.at[idx, "accepted"] = accepted
+        # 保存为 JSON 字符串，方便后续解析
+        df.at[idx, "decision"] = json.dumps(decision, ensure_ascii=False)
+
+    df.to_parquet(args.save_path, index=False)
+    print(f"Saved results to {args.save_path}")
     df = pd.read_parquet(args.save_path)
 
     df = df[df['accepted'] ==True]
