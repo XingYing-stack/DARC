@@ -436,6 +436,17 @@ class RayPPOTrainer:
                         if a in winners:
                             chosen = a
                             break
+                    # Treat "None" (e.g., \boxed{None}) as an invalid self-vote label. 题有问题！！
+                    # This avoids rewarding/anchoring the solver on emitting "None".
+                    chosen_norm = str(chosen).strip().lower()
+                    # unwrap common LaTeX wrappers like \text{None}
+                    chosen_norm = re.sub(r"\\(?:text|mathrm|mathbf|bf|rm)\s*\{\s*(.*?)\s*\}", r"\1", chosen_norm)
+                    chosen_norm = chosen_norm.strip().strip(".,;:!\"'`()[]{}<>")
+                    if chosen_norm == "none":
+                        answers_per_item[idx] = ""
+                        vote_frac_per_item[idx] = 0.0
+                        continue
+
                     answers_per_item[idx] = chosen
                     try:
                         vote_frac_per_item[idx] = float(top[0][1]) / max(n, 1)

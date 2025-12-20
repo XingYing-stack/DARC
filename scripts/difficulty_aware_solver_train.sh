@@ -53,17 +53,17 @@ python3 -m verl.trainer.main \
 #echo ""merging model
 #python scripts/model_merger.py --local_dir ${STORAGE_PATH}/models/${experiment_name}/global_step_55/actor
 
-# python scripts/model_merger.py --local_dir /share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_solver_1218/global_step_133/actor
+# python scripts/model_merger.py --local_dir /share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_solver_prompt_voting_1218/global_step_128/actor/
 #
 #sleep 10
 #
 #echo "solver training finished"
 #
 #bash evaluation/evaluate.bash ${STORAGE_PATH}/models/${experiment_name}/global_step_15/actor/huggingface
-#bash evaluation/evaluate.bash /share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_solver_1218/global_step_133/actor/huggingface
+#bash evaluation/evaluate.bash /share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_solver_prompt_voting_1218/global_step_128/actor/huggingface
 
 
 
 
 
-# python evaluation/difficulty_aware_results_recheck.py --result_path /share_data/data1/fanshengda/DEvo/ckpts/evaluation/_share_data_data1_fanshengda_DEvo_ckpts_models_qwen3-4b-difficulty_aware_solver_1218_global_step_133_actor_huggingface
+# python evaluation/difficulty_aware_results_recheck.py --result_path /share_data/data1/fanshengda/DEvo/ckpts/evaluation/_share_data_data1_fanshengda_DEvo_ckpts_models_qwen3-4b-difficulty_aware_solver_prompt_voting_1218_global_step_128_actor_huggingface

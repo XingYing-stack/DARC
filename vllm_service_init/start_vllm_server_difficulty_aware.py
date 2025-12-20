@@ -68,11 +68,15 @@ sample_params = vllm.SamplingParams(
 )
 
 # ------------- Debug helpers ------------- #
+LOG_TRUNCATE = os.getenv("LOG_TRUNCATE", "1") == "1"
+
 def _trunc(obj, n: int = 120) -> str:
     try:
         s = str(obj)
     except Exception:
         s = repr(obj)
+    if not LOG_TRUNCATE:
+        return s
     return s if len(s) <= n else s[:n] + '...'
 
 def _top_counts(d: dict, k: int = 3):

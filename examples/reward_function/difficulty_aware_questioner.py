@@ -75,6 +75,7 @@ INVALID_SCORE = {"overall": -1.0, "format": 0.0, "accuracy": 0.0}
 QUESTION_PATTERN = re.compile(r"<question>(.*?)</question>", re.DOTALL | re.IGNORECASE)
 CODE_FENCE_JSON = re.compile(r"^\s*```(?:json)?\s*(\{.*\})\s*```\s*$", re.IGNORECASE | re.DOTALL)
 EXPRESSION_PATTERN = re.compile(r"[A-Za-z0-9_+\-*/^().= \\{}]+$")
+_CATEGORICAL_OPTION_RE = re.compile(r"(?m)^\s*([A-J])[\.\)]\s+")
 
 os.environ["NO_PROXY"] = "0.0.0.0,127.0.0.1"
 
@@ -506,6 +507,18 @@ def normalize_categorical_answer(answer: str) -> Optional[str]:
     return None
 
 
+def categorical_question_has_options(question: str, *, min_distinct: int = 3) -> bool:
+    """Heuristic: a categorical (multiple-choice) question should include explicit options.
+
+    We require >= `min_distinct` distinct option labels among A-J in line-start patterns
+    like "A." / "B)" / etc.
+    """
+    if not isinstance(question, str) or not question.strip():
+        return False
+    hits = _CATEGORICAL_OPTION_RE.findall(question.upper())
+    return len(set(hits)) >= int(min_distinct)
+
+
 def difficulty_reward(solver_score: Optional[float], difficulty_id: Optional[int]) -> float:
     """Simple linear reward: 1 - |solver_success - target_success|.
 
@@ -732,6 +745,10 @@ def compute_score(
             difficulty_id, answer_type = parse_ground_truth(ground_truths[idx])
             if difficulty_id is None:
                 continue
+            if isinstance(answer_type, str) and answer_type.lower() == "categorical":
+                if not categorical_question_has_options(question):
+                    scores[idx] = INVALID_SCORE.copy()
+                    continue
             # extract text for answer derivation (may be empty if unavailable)
             gt_text = extract_text_from_ground_truth(ground_truths[idx]) or ""
             answer_payload.append({"text": gt_text, "question": question, "answer_type": answer_type})
@@ -744,6 +761,8 @@ def compute_score(
 
             difficulty_id, answer_type = parse_ground_truth(ground_truths[idx])
             if answer_type and isinstance(answer_type, str) and answer_type.lower() == "categorical":
+                if not categorical_question_has_options(question):
+                    continue
                 answer = normalize_categorical_answer(answer) or answer
             if answer_type and not validate_answer_type(answer, answer_type):
                 continue

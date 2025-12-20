@@ -18,8 +18,8 @@ args = parser.parse_args()
 # ----------------------------
 #   保持硬编码不动
 # ----------------------------
-api_urls = ["https://api.gptsapi.net/v1"]
-api_keys = ["sk-54oeef36602430a9a264f8ea73ec8365c3d39c5622d24XMb"]
+api_urls = ["https://toollearning.cn/v1"]
+api_keys = ["sk-abHpUvVt7LLnmEyxCe17021d8e774e97Bd7aA9Bc4f2b1076"]
 
 # 提前建好 client 列表（每个 url/key 一个 client）
 clients = [
