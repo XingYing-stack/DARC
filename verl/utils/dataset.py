@@ -220,6 +220,21 @@ class RLHFDataset(Dataset):
         else:
             return [{"role": "user", "content": prompt_str}]
 
+    @staticmethod
+    def _chat_to_prompt_fallback(messages: List[Dict[str, Any]]) -> str:
+        lines: List[str] = []
+        for msg in messages:
+            role = str((msg.get("role") or "user")).strip()
+            content = msg.get("content")
+            if content is None:
+                content_str = ""
+            elif isinstance(content, str):
+                content_str = content
+            else:
+                content_str = str(content)
+            lines.append(f"{role}: {content_str}")
+        return "\n".join(lines)
+
     def _filter_overlong_prompts(self, example: Dict[str, Any]) -> bool:
         messages = self._build_messages(example)
         processing_class = self.processor if self.processor is not None else self.tokenizer
@@ -229,7 +244,7 @@ class RLHFDataset(Dataset):
             )
         else:
             return (
-                len("system: " + messages[0]["content"] + '\n' + "user: " + messages[1]["content"]) <= self.max_prompt_length
+                len(self._chat_to_prompt_fallback(messages)) <= self.max_prompt_length
             )
         
 
@@ -255,7 +270,7 @@ class RLHFDataset(Dataset):
             if self.tokenizer.chat_template:
                 prompt = self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
             else:
-                prompt = "system: " + messages[0]["content"] + '\n' + "user: " + messages[1]["content"]
+                prompt = self._chat_to_prompt_fallback(messages)
             model_inputs = self.tokenizer([prompt], add_special_tokens=False, return_tensors="pt")
             input_ids = model_inputs.pop("input_ids")[0]
             attention_mask = model_inputs.pop("attention_mask")[0]
