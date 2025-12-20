@@ -76,6 +76,7 @@ QUESTION_PATTERN = re.compile(r"<question>(.*?)</question>", re.DOTALL | re.IGNO
 CODE_FENCE_JSON = re.compile(r"^\s*```(?:json)?\s*(\{.*\})\s*```\s*$", re.IGNORECASE | re.DOTALL)
 EXPRESSION_PATTERN = re.compile(r"[A-Za-z0-9_+\-*/^().= \\{}]+$")
 _CATEGORICAL_OPTION_RE = re.compile(r"(?m)^\s*([A-J])[\.\)]\s+")
+_LEADING_ROLE_PREFIX = re.compile(r"^\s*(assistant)\s*[:：]\s*", re.IGNORECASE)
 
 os.environ["NO_PROXY"] = "0.0.0.0,127.0.0.1"
 
@@ -236,6 +237,14 @@ def extract_question_and_answer(predict: str) -> Tuple[Optional[str], Optional[s
         return None, None
 
     stripped = predict.strip()
+    # Some chat templates prepend a role prefix like "Assistant:". Strip it if it
+    # appears at the beginning, so we can still parse the fenced JSON.
+    stripped2 = _LEADING_ROLE_PREFIX.sub("", stripped, count=1)
+    if stripped2 != stripped:
+        # only accept stripping when it plausibly reveals JSON/fence
+        head = stripped2.lstrip()
+        if head.startswith("```") or head.startswith("{"):
+            stripped = stripped2
 
     # Accept a single fenced JSON block or raw JSON
     m = CODE_FENCE_JSON.match(stripped)
@@ -293,6 +302,11 @@ def extract_question_only(predict: str) -> Optional[str]:
         return None
 
     stripped = predict.strip()
+    stripped2 = _LEADING_ROLE_PREFIX.sub("", stripped, count=1)
+    if stripped2 != stripped:
+        head = stripped2.lstrip()
+        if head.startswith("```") or head.startswith("{"):
+            stripped = stripped2
     m = CODE_FENCE_JSON.match(stripped)
     if m:
         json_text = m.group(1).strip()
