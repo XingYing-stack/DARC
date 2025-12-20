@@ -12,11 +12,21 @@ from sentence_transformers import SentenceTransformer, util
 from tqdm import tqdm
 from collections import Counter
 import os
+import re
 
 CATEGORICAL_INSTRUCTION = (
     "\nPlease reason step by step, and put your final answer option within \\boxed{}."
     " Only put the letter in the box, e.g. \\boxed{A}. There is only one correct answer."
 )
+
+_CATEGORICAL_OPTION_RE = re.compile(r"(?m)^\s*([A-J])[\.\)]\s+")
+
+
+def categorical_question_has_options(question: str, *, min_distinct: int = 3) -> bool:
+    if not isinstance(question, str) or not question.strip():
+        return False
+    hits = _CATEGORICAL_OPTION_RE.findall(question.upper())
+    return len(set(hits)) >= int(min_distinct)
 
 
 def _normalize_answer_type(value) -> str:
@@ -25,14 +35,11 @@ def _normalize_answer_type(value) -> str:
     return value.strip().lower()
 
 
-def _infer_answer_type(sample: dict) -> str:
+def _require_answer_type(sample: dict) -> str:
     at = _normalize_answer_type(sample.get("answer_type"))
-    if at:
-        return at
-    ans = sample.get("answer")
-    if isinstance(ans, str) and len(ans.strip()) == 1 and ans.strip().upper() in set("ABCDEFGHIJ"):
-        return "categorical"
-    return ""
+    if not at:
+        raise ValueError("Missing required field `answer_type` in sample.")
+    return at
 
 
 def process_one(idx, messages, client: OpenAI, model_name: str):
@@ -90,7 +97,7 @@ def _gen_single_item(idx, sample):
     assert isinstance(sample["question"], str), \
         f"question must be str, got {type(sample['question'])}"
 
-    answer_type = _infer_answer_type(sample)
+    answer_type = _require_answer_type(sample)
 
     if answer_type == "categorical":
         prompt = [
@@ -361,7 +368,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--parquet_path",
         type=str,
-        default="/share_data/data1/fanshengda/DEvo/data/challenger_1216/train.parquet",
+        default="/share_data/data1/fanshengda/DEvo/data/challenger_1219/train.parquet",
         help="输入 parquet 路径",
     )
     parser.add_argument(
@@ -511,6 +518,37 @@ if __name__ == "__main__":
     print(f"Dropped {num_bad} rows ({num_bad / len(solver_df):.4%}) due to invalid Unicode")
 
     solver_df = solver_df.loc[~bad_mask].reset_index(drop=True)
+
+
+    # 添加对于问题是否包含选项的过滤
+    def _extract_user_question(prompt_cell) -> str:
+        if not isinstance(prompt_cell, list):
+            return ""
+        for msg in prompt_cell:
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                return str(msg.get("content") or "")
+        return ""
+
+    def _is_categorical(extra_info_cell) -> bool:
+        if not isinstance(extra_info_cell, dict):
+            raise TypeError("extra_info must be a dict.")
+        at = extra_info_cell.get("answer_type")
+        if not isinstance(at, str) or not at.strip():
+            raise ValueError("extra_info.answer_type is required and must be a non-empty string.")
+        return at.strip().lower() == "categorical"
+
+    before = len(solver_df)
+    drop_mask = solver_df.apply(
+        lambda row: (
+            _is_categorical(row.get("extra_info"))
+            and (not categorical_question_has_options(_extract_user_question(row.get("prompt"))))
+        ),
+        axis=1,
+    )
+    num_drop = int(drop_mask.sum())
+    if num_drop:
+        solver_df = solver_df.loc[~drop_mask].reset_index(drop=True)
+    print(f"Dropped {num_drop} categorical rows without options ({num_drop / max(before, 1):.4%})")
 
     solver_df.to_parquet(args.solver_save_path, index=False)
     print(f"Saved solver results to {args.solver_save_path}, len(solver_df): {len(solver_df)}")

@@ -91,6 +91,16 @@ CATEGORICAL_INSTRUCTION = (
     " Only put the letter in the box, e.g. \\boxed{A}. There is only one correct answer."
 )
 
+def _is_invalid_candidate(ans: object) -> bool:
+    """Filter out solver 'non-answers' like \\boxed{None} from voting/scoring."""
+    if not isinstance(ans, str):
+        return True
+    s = ans.strip()
+    if not s:
+        return True
+    return s.lower() == "none"
+
+
 def _chat_to_prompt_fallback(chat: list[dict]) -> str:
     """Convert chat messages to a plain-text prompt when no chat_template is available."""
     lines = []
@@ -239,9 +249,25 @@ def hello():
         score on majority-vote equality; instead we compute the fraction of samples
         equivalent to the golden answer using mathruler with timeouts.
         '''
-        # Extract boxed content from all candidate outputs
-        results = [extract_boxed_content(out.text) for out in response.outputs]
-        results = [r for r in results if r]
+        # Extract boxed content from all candidate outputs.
+        # Keep "None" candidates in the denominator (so the success rate reflects abstentions),
+        # but if ALL candidates are invalid (e.g., only \\boxed{None} / empty), mark as invalid.
+        raw_results = [extract_boxed_content(out.text) for out in response.outputs]
+        results = [r for r in raw_results if r]  # keep truthy strings, including "None"
+        has_any_valid = any(not _is_invalid_candidate(r) for r in results)
+        if not has_any_valid:
+            print('  [post] question=', _trunc(question, 300))
+            print('  [post] golden =', _trunc(golden_answer, 100))
+            print('  [post] results= 0 cands; top counts= []')
+            print('  [post] majority= (none)')
+            print('  [post] success =', "0/0", "rate=-1.000")
+            return {
+                'question': question,
+                'answer':   '',
+                'majority_fraction': 0.0,
+                'score':    -1.0,
+                'results':  [],
+            }
 
         # Keep majority computation only for debugging/telemetry
         answer_counts = {}
@@ -289,6 +315,9 @@ def hello():
         total = len(results)
         for r in results:
             if not r:
+                continue
+            if _is_invalid_candidate(r):
+                # Count in denominator but skip expensive matching calls
                 continue
             matched = False
             # Cheap equality first
@@ -465,7 +494,8 @@ def answer_from_text():
         r_idx += 1
         # Collect boxed results
         cand = [extract_boxed_content(out.text) for out in resp.outputs]
-        cand = [c for c in cand if c]
+        # 不太确定会有多大影响，可能会造成不对齐，先打开试试
+        cand = [c for c in cand if not _is_invalid_candidate(c)]
         answer_counts = {}
         for res in cand:
             if not res:
