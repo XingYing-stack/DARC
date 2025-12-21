@@ -75,7 +75,11 @@ INVALID_SCORE = {"overall": -1.0, "format": 0.0, "accuracy": 0.0}
 QUESTION_PATTERN = re.compile(r"<question>(.*?)</question>", re.DOTALL | re.IGNORECASE)
 CODE_FENCE_JSON = re.compile(r"^\s*```(?:json)?\s*(\{.*\})\s*```\s*$", re.IGNORECASE | re.DOTALL)
 EXPRESSION_PATTERN = re.compile(r"[A-Za-z0-9_+\-*/^().= \\{}]+$")
-_CATEGORICAL_OPTION_RE = re.compile(r"(?m)^\s*([A-J])[\.\)]\s+")
+# _CATEGORICAL_OPTION_RE = re.compile(r"(?m)^\s*([A-J])[\.\)]\s+")
+_CATEGORICAL_OPTION_RE = re.compile(
+    r"(?i)(?:^|\\r\\n|\\n|\\r|\r\n|\n|\r)\s*([A-J])\s*"
+    r"(?:[\.\):：\uFF0E\uFF09\u3001])\s*"
+)
 _LEADING_ROLE_PREFIX = re.compile(r"^\s*(assistant)\s*[:：]\s*", re.IGNORECASE)
 
 os.environ["NO_PROXY"] = "0.0.0.0,127.0.0.1"

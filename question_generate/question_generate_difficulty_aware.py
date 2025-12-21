@@ -19,7 +19,11 @@ CATEGORICAL_INSTRUCTION = (
     " Only put the letter in the box, e.g. \\boxed{A}. There is only one correct answer."
 )
 
-_CATEGORICAL_OPTION_RE = re.compile(r"(?m)^\s*([A-J])[\.\)]\s+")
+# _CATEGORICAL_OPTION_RE = re.compile(r"(?m)^\s*([A-J])[\.\)]\s+")
+_CATEGORICAL_OPTION_RE = re.compile(
+    r"(?i)(?:^|\\r\\n|\\n|\\r|\r\n|\n|\r)\s*([A-J])\s*"
+    r"(?:[\.\):：\uFF0E\uFF09\u3001])\s*"
+)
 
 
 def categorical_question_has_options(question: str, *, min_distinct: int = 3) -> bool:
@@ -330,7 +334,7 @@ def filter_duplicate(df, model_path):
 
 # nohup python question_generate_difficulty_aware.py > ../logs/question_generate_difficulty_aware_qwen4B.log 2>&1 &
 # CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve /share_data/data1/models/Qwen/Qwen3-4B-Instruct-2507 --served-model-name /share_data/data1/models/Qwen/Qwen3-4B-Instruct-2507 --max-model-len=32768 --tensor-parallel-size 4 --port 6001 --api-key dada --gpu-memory-utilization 0.9 --disable_cascade_attn
-# CUDA_VISIBLE_DEVICES=4,5,6,7 vllm serve /share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_questioner_1207/global_step_300/actor/huggingface --served-model-name questioner --max-model-len=32768 --tensor-parallel-size 4 --port 6000 --api-key dada --gpu-memory-utilization 0.9 --disable_cascade_attn
+# CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 vllm serve /share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_questioner_1220/global_step_350/actor/huggingface --served-model-name questioner --max-model-len=32768 --tensor-parallel-size 8 --port 6000 --api-key dada --gpu-memory-utilization 0.9 --disable_cascade_attn
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default="questioner")
@@ -342,13 +346,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--save_path",
         type=str,
-        default="/share_data/data1/fanshengda/DEvo/data/solver_1216/qestioner_250_train.parquet",
+        default="/share_data/data1/fanshengda/DEvo/data/solver_1221/questioner_350_train.parquet",
         help="输出 parquet 路径",
     )
     parser.add_argument(
         "--solver_save_path",
         type=str,
-        default="/share_data/data1/fanshengda/DEvo/data/solver_1216/solver_questioner_250_train.parquet",
+        default="/share_data/data1/fanshengda/DEvo/data/solver_1221/solver_questioner_350_train.parquet",
         help="输出 parquet 路径",
     )
     parser.add_argument(
@@ -361,7 +365,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dup_solver_save_path",
         type=str,
-        default="/share_data/data1/fanshengda/DEvo/data/solver_1216/solver_questioner_250_train_pruned.parquet",
+        default="/share_data/data1/fanshengda/DEvo/data/solver_1221/solver_questioner_350_train_pruned.parquet",
         help="输出 parquet 路径",
     )
 
@@ -468,12 +472,13 @@ if __name__ == "__main__":
         solver = json.loads(raw)
         try:
             solver = json.loads(solver['raw'])
+            solver['answer_type'] = sample[2]['answer_type']
             solver['difficulty_id'] = difficulty_id
             solver['text']= text
             required_keys = {
                 'analysis', 'question', 'intermediate_results', 'answer',
                 'solving_time_estimate', 'required_concepts', 'potential_errors',
-                'difficulty_id', 'text'
+                'difficulty_id', 'text', 'answer_type'
             }
 
             if set(solver.keys()) != required_keys:
@@ -507,18 +512,6 @@ if __name__ == "__main__":
     print(bad[["prompt"]].head(5))
     print(bad["prompt"].apply(type).value_counts())
 
-    tqdm.pandas(desc="Scanning for invalid Unicode")
-
-    bad_mask = solver_df.progress_apply(
-        lambda row: any(has_surrogate_in_anything(v) for v in row.values),
-        axis=1
-    )
-
-    num_bad = int(bad_mask.sum())
-    print(f"Dropped {num_bad} rows ({num_bad / len(solver_df):.4%}) due to invalid Unicode")
-
-    solver_df = solver_df.loc[~bad_mask].reset_index(drop=True)
-
 
     # 添加对于问题是否包含选项的过滤
     def _extract_user_question(prompt_cell) -> str:
@@ -550,19 +543,37 @@ if __name__ == "__main__":
         solver_df = solver_df.loc[~drop_mask].reset_index(drop=True)
     print(f"Dropped {num_drop} categorical rows without options ({num_drop / max(before, 1):.4%})")
 
+    print('Answer Type Distribution:', Counter([sample['answer_type'] for sample in solver_df['extra_info'].tolist()]))
+
+
+    # ======================去除非unicode字符======================
+    tqdm.pandas(desc="Scanning for invalid Unicode")
+
+    bad_mask = solver_df.progress_apply(
+        lambda row: any(has_surrogate_in_anything(v) for v in row.values),
+        axis=1
+    )
+
+    num_bad = int(bad_mask.sum())
+    print(f"Dropped {num_bad} rows ({num_bad / len(solver_df):.4%}) due to invalid Unicode")
+
+    solver_df = solver_df.loc[~bad_mask].reset_index(drop=True)
+    #
+
+
     solver_df.to_parquet(args.solver_save_path, index=False)
     print(f"Saved solver results to {args.solver_save_path}, len(solver_df): {len(solver_df)}")
 
 
-    solver_df = pd.read_parquet(args.solver_save_path)
-
-    solver_df = filter_duplicate(solver_df, args.sentence_transformer_path)
-
-    print(Counter([sample['extra_info']['difficulty_id'] for sample in solver_df.to_dict(orient="records")]))
-    assert_curriculum_order(solver_df)
+    # solver_df = pd.read_parquet(args.solver_save_path)
+    #
+    # solver_df = filter_duplicate(solver_df, args.sentence_transformer_path)
+    #
+    # print(Counter([sample['extra_info']['difficulty_id'] for sample in solver_df.to_dict(orient="records")]))
+    # assert_curriculum_order(solver_df)
 
     # solver_df = filter_unrelative(solver_df, base_url=args.judge_base_url, api_key=args.judge_api_key)
     # assert_curriculum_order(solver_df)
 
-    solver_df.to_parquet(args.dup_solver_save_path, index=False)
-    print(f"Saved solver results to {args.dup_solver_save_path}, len(pruned_solver_df): {len(solver_df)}")
+    # solver_df.to_parquet(args.dup_solver_save_path, index=False)
+    # print(f"Saved solver results to {args.dup_solver_save_path}, len(pruned_solver_df): {len(solver_df)}")
