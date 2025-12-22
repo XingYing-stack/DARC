@@ -249,9 +249,10 @@ def compute_score(
         # If caller requested self_vote but a (non-empty) gold is present (e.g.,
         # trainer performed text_prompt labeling), prefer rule to avoid double voting.
         if group_mode == "self_vote":
-            gold_present = str(parsed[lo].get("ground_truth", "")).strip() != ""
-            if gold_present:
-                group_mode = "rule"
+            # gold_present = str(parsed[lo].get("ground_truth", "")).strip() != ""
+            # if gold_present:
+            #     group_mode = "rule"
+            group_mode = "rule"
 
         if group_mode == "rule":
             gold = str(parsed[lo].get("ground_truth", ""))
