@@ -49,6 +49,15 @@ from . import core_algos
 from .config import PPOConfig
 from .metrics import compute_data_metrics, compute_throughout_metrics, compute_timing_metrics, reduce_metrics
 
+def _is_invalid_candidate(ans: object) -> bool:
+    """Filter out solver 'non-answers' like \\boxed{None} from voting/scoring."""
+    if not isinstance(ans, str):
+        return True
+    s = ans.strip()
+    if not s:
+        return True
+    return s.lower() == "none"
+
 
 class Role(IntEnum):
     """
@@ -442,7 +451,7 @@ class RayPPOTrainer:
                     # unwrap common LaTeX wrappers like \text{None}
                     chosen_norm = re.sub(r"\\(?:text|mathrm|mathbf|bf|rm)\s*\{\s*(.*?)\s*\}", r"\1", chosen_norm)
                     chosen_norm = chosen_norm.strip().strip(".,;:!\"'`()[]{}<>")
-                    if chosen_norm == "none":
+                    if chosen_norm == "none" or chosen_norm == "":
                         answers_per_item[idx] = ""
                         vote_frac_per_item[idx] = 0.0
                         continue

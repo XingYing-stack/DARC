@@ -175,11 +175,14 @@ def _score_against_gold(pred: str, gold: str, format_weight: float, require_thin
     fmt = _format_score(pred, require_think=require_think)
     pred_ans = _extract_answer(pred)
     acc = 0.0
-    try:
-        acc = 1.0 if grade_answer(pred_ans, gold) else 0.0
-    except Exception:
-        # fallback to strict string match
-        acc = 1.0 if pred_ans != "" and pred_ans == str(gold).strip() else 0.0
+    if pred_ans == "" or pred_ans.lower() == 'none':
+        acc = 0.0
+    else:
+        try:
+            acc = 1.0 if grade_answer(pred_ans, gold) else 0.0
+        except Exception:
+            # fallback to strict string match
+            acc = 1.0 if pred_ans != "" and pred_ans == str(gold).strip() else 0.0
     overall = (1.0 - format_weight) * acc + format_weight * fmt
     return {"overall": float(overall), "format": float(fmt), "accuracy": float(acc)}
 

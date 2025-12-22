@@ -494,7 +494,7 @@ def answer_from_text():
         r_idx += 1
         # Collect boxed results
         cand = [extract_boxed_content(out.text) for out in resp.outputs]
-        # 不太确定会有多大影响，可能会造成不对齐，先打开试试
+        # 不太确定会有多大影响，可能会造成不对齐，先打开试试，只对合理的脚本做majority voting
         cand = [c for c in cand if not _is_invalid_candidate(c)]
         answer_counts = {}
         for res in cand:
