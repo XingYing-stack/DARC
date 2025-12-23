@@ -128,8 +128,11 @@ def _format_score(predict: str, require_think: bool = False) -> float:
         # strict pattern: <think>...</think> ... \boxed{...}
         pattern = re.compile(r"<think>.*?</think>.*?\\boxed\{.*?\}", re.DOTALL | re.IGNORECASE)
         return 1.0 if re.search(pattern, predict) else 0.0
-    # relaxed: only require boxed
-    return 1.0 if _BOXED_RE.search(predict) else 0.0
+    # relaxed: require boxed and some non-whitespace outside the boxed content
+    if not _BOXED_RE.search(predict):
+        return 0.0
+    outside = _BOXED_RE.sub("", predict)
+    return 1.0 if outside.strip() else 0.0
 
 
 def _majority_vote(answers: List[str]) -> Tuple[str, float]:
@@ -173,6 +176,9 @@ def _group_indices_by_repeat(ground_truths: List[Any]) -> List[Tuple[int, int]]:
 
 def _score_against_gold(pred: str, gold: str, format_weight: float, require_think: bool) -> Dict[str, float]:
     fmt = _format_score(pred, require_think=require_think)
+    if fmt <= 0.0:
+        # Hard fail: no format credit means no accuracy credit.
+        return {"overall": 0.0, "format": float(fmt), "accuracy": 0.0}
     pred_ans = _extract_answer(pred)
     acc = 0.0
     if pred_ans == "" or pred_ans.lower() == 'none':

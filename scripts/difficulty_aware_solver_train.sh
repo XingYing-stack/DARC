@@ -43,6 +43,7 @@ python3 -m verl.trainer.main \
     trainer.save_freq=64 \
     algorithm.kl_coef=0 \
     worker.rollout.n=8 \
+    algorithm.norm_adv_by_std_in_grpo=false \
     worker.actor.micro_batch_size_per_device_for_update=1 \
     worker.actor.micro_batch_size_per_device_for_experience=1 \
     worker.actor.ulysses_sequence_parallel_size=1 \
