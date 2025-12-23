@@ -102,6 +102,8 @@ class TrainerConfig:
     dump_rollout_path: Optional[str] = None
     dump_rollout_n: int = 0
     dump_rollout_every: int = 0
+    # Self-vote ratio: True uses total rollouts, False uses valid candidates only
+    self_vote_ratio_use_all: bool = False
 
     def post_init(self):
         if self.save_checkpoint_path is None:

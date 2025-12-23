@@ -433,6 +433,10 @@ class RayPPOTrainer:
                 group = resp_ids[idx * n : (idx + 1) * n]
                 texts = [self.tokenizer.decode(t.tolist(), skip_special_tokens=True) for t in group]
                 ans = [_extract_answer(t) for t in texts]
+
+                # 去掉不可能的候选
+                ans = [sample for sample in ans if not _is_invalid_candidate(sample)]
+                valid_count = len(ans)
                 cnt = Counter(a for a in ans if a)
                 if not cnt:
                     answers_per_item[idx] = ""
@@ -458,7 +462,8 @@ class RayPPOTrainer:
 
                     answers_per_item[idx] = chosen
                     try:
-                        vote_frac_per_item[idx] = float(top[0][1]) / max(n, 1)
+                        denom = n if self.config.trainer.self_vote_ratio_use_all else valid_count
+                        vote_frac_per_item[idx] = float(top[0][1]) / max(denom, 1)
                     except Exception:
                         vote_frac_per_item[idx] = 0.0
 
