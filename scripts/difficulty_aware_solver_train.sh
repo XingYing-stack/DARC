@@ -28,7 +28,7 @@ python3 -m verl.trainer.main \
     trainer.experiment_name=${experiment_name} \
     trainer.save_checkpoint_path=${STORAGE_PATH}/models/${experiment_name}/ \
     trainer.self_vote_ratio_use_all=false \
-    trainer.dump_rollout_n=16 \
+    trainer.dump_rollout_n=32 \
     trainer.dump_rollout_every=1 \
     trainer.dump_rollout_path=${STORAGE_PATH}/models/${experiment_name}/rollouts.jsonl \
     trainer.total_epochs=1 \
@@ -41,9 +41,7 @@ python3 -m verl.trainer.main \
     data.val_answer_key=answer \
     trainer.val_freq=4 \
     trainer.save_freq=64 \
-    algorithm.kl_coef=0.01 \
-    algorithm.norm_adv_by_std_in_grpo=false \
-    worker.actor.loss_agg_mode=seq-mean-token-sum-norm \
+    algorithm.kl_coef=0 \
     worker.rollout.n=8 \
     worker.actor.micro_batch_size_per_device_for_update=1 \
     worker.actor.micro_batch_size_per_device_for_experience=1 \
