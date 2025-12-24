@@ -133,8 +133,31 @@ class RLHFDataset(Dataset):
             personas_dataset = load_dataset("proj-persona/PersonaHub", "math", split="train")
             self.personas = [item['input persona'] for item in personas_dataset]
             # self.personas = self.personas.select(range(100))
+        if os.environ.get("RANK", "0") == "0" and os.environ.get("LOCAL_RANK", "0") == "0":
+            label_key = self.label_prompt_key or "label_prompt_key"
+            has_label_key = self.label_prompt_key in self.dataset.column_names if self.label_prompt_key else False
+            sample_n = min(200, len(self.dataset))
+            non_empty = 0
+            if has_label_key and sample_n > 0:
+                sample = self.dataset.select(range(sample_n))
+                for ex in sample:
+                    v = ex.get(self.label_prompt_key)
+                    if v is not None and str(v).strip() != "":
+                        non_empty += 1
+            print(
+                f"Label prompt check: key={label_key}, present={has_label_key}, "
+                f"non_empty_sample={non_empty}/{sample_n}"
+            )
         if self.filter_overlong_prompts:
+            before_count = len(self.dataset)
             self.dataset = self.dataset.filter(self._filter_overlong_prompts, desc="Filtering overlong prompts")
+            after_count = len(self.dataset)
+            dropped = before_count - after_count
+            ratio = dropped / before_count if before_count > 0 else 0.0
+            print(
+                f"Filtered overlong promts: kept {after_count}/{before_count} "
+                f"({ratio:.2%} dropped)"
+            )
 
     def _build_messages(self, example: Dict[str, Any]) -> List[Dict[str, Any]]:
         prompt_data = example[self.prompt_key]

@@ -22,14 +22,14 @@ python3 -m verl.trainer.main \
     data.max_prompt_length=8192 \
     data.max_response_length=4096 \
     data.shuffle=false \
-    data.rollout_batch_size=128 \
-    worker.actor.global_batch_size=128 \
+    data.rollout_batch_size=512 \
+    worker.actor.global_batch_size=512 \
     data.train_files=${solver_train_file} \
     worker.actor.model.model_path=$solver_model_path \
     trainer.experiment_name=${experiment_name} \
     trainer.save_checkpoint_path=${STORAGE_PATH}/models/${experiment_name}/ \
     trainer.self_vote_ratio_use_all=true \
-    trainer.dump_rollout_n=32 \
+    trainer.dump_rollout_n=64 \
     trainer.dump_rollout_every=1 \
     trainer.dump_rollout_path=${STORAGE_PATH}/models/${experiment_name}/rollouts.jsonl \
     trainer.total_epochs=1 \
@@ -41,13 +41,14 @@ python3 -m verl.trainer.main \
     data.val_prompt_key=problem \
     data.val_answer_key=answer \
     trainer.val_freq=4 \
-    trainer.save_freq=32 \
+    trainer.save_freq=16 \
     algorithm.kl_coef=0 \
     worker.rollout.n=8 \
     algorithm.norm_adv_by_std_in_grpo=false \
     worker.actor.micro_batch_size_per_device_for_update=1 \
     worker.actor.micro_batch_size_per_device_for_experience=1 \
-    worker.actor.ulysses_sequence_parallel_size=1 \
+    worker.rollout.max_num_batched_tokens=15000 \
+    worker.actor.ulysses_sequence_parallel_size=4 \
     worker.reward.reward_function=./examples/reward_function/difficulty_aware_solver.py:compute_score \
     worker.reward.reward_function_kwargs.solver_label_mode=self_vote \
     worker.reward.reward_function_kwargs.label_prompt_key=text_prompt \
@@ -73,4 +74,4 @@ python3 -m verl.trainer.main \
 
 
 
-# python evaluation/difficulty_aware_results_recheck.py --result_path /share_data/data1/fanshengda/DEvo/ckpts/evaluation/_share_data_data1_fanshengda_DEvo_ckpts_models_qwen3-4b-difficulty_aware_solver_1223_global_step_64_actor_huggingface
+# python evaluation/difficulty_aware_results_recheck.py --result_path /share_data/data1/fanshengda/DEvo/ckpts/evaluation/_share_data_data1_fanshengda_DEvo_ckpts_models_qwen3-4b-difficulty_aware_solver_1223_global_step_128_actor_huggingface

@@ -1,6 +1,6 @@
 import json
 
-filename = '/share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_solver_1223/rollouts.jsonl'
+filename = '/share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_solver_1224/rollouts.jsonl'
 empty_count = 0
 total_count = 0
 
