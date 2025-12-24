@@ -95,6 +95,7 @@ class RLHFDataset(Dataset):
         max_pixels: Optional[int] = None,
         min_pixels: Optional[int] = None,
         filter_overlong_prompts: bool = True,
+        label_prompt_key: Optional[str] = None,
     ):
         self.tokenizer = tokenizer
         self.processor = processor
@@ -106,6 +107,7 @@ class RLHFDataset(Dataset):
         self.max_pixels = max_pixels
         self.min_pixels = min_pixels
         self.filter_overlong_prompts = filter_overlong_prompts
+        self.label_prompt_key = label_prompt_key
 
         if "@" in data_path:
             data_path, data_split = data_path.split("@")
@@ -235,17 +237,52 @@ class RLHFDataset(Dataset):
             lines.append(f"{role}: {content_str}")
         return "\n".join(lines)
 
+    @staticmethod
+    def _normalize_prompt_data(prompt_data: Any) -> Optional[List[Dict[str, Any]]]:
+        if isinstance(prompt_data, list):
+            return prompt_data
+        if isinstance(prompt_data, dict):
+            return [prompt_data]
+        if isinstance(prompt_data, str):
+            m = prompt_data.strip()
+            if m.startswith("{") or m.startswith("["):
+                try:
+                    parsed = json.loads(m)
+                    if isinstance(parsed, list):
+                        return parsed
+                    if isinstance(parsed, dict):
+                        return [parsed]
+                except Exception:
+                    pass
+            return [{"role": "user", "content": prompt_data}]
+        return None
+
     def _filter_overlong_prompts(self, example: Dict[str, Any]) -> bool:
         messages = self._build_messages(example)
         processing_class = self.processor if self.processor is not None else self.tokenizer
         if self.tokenizer.chat_template:
-            return (
-                len(processing_class.apply_chat_template(messages, add_generation_prompt=True)) <= self.max_prompt_length
-            )
+            if (
+                len(processing_class.apply_chat_template(messages, add_generation_prompt=True))
+                > self.max_prompt_length
+            ):
+                return False
         else:
-            return (
-                len(self._chat_to_prompt_fallback(messages)) <= self.max_prompt_length
-            )
+            if len(self._chat_to_prompt_fallback(messages)) > self.max_prompt_length:
+                return False
+
+        if self.label_prompt_key and self.label_prompt_key in example:
+            label_messages = self._normalize_prompt_data(example.get(self.label_prompt_key))
+            if label_messages:
+                if self.tokenizer.chat_template:
+                    if (
+                        len(processing_class.apply_chat_template(label_messages, add_generation_prompt=True))
+                        > self.max_prompt_length
+                    ):
+                        return False
+                else:
+                    if len(self._chat_to_prompt_fallback(label_messages)) > self.max_prompt_length:
+                        return False
+        return True
         
 
     def __len__(self):

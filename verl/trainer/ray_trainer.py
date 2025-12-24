@@ -357,6 +357,7 @@ class RayPPOTrainer:
                 input_ids = model_inputs.pop("input_ids")[0]
                 attention_mask = model_inputs.pop("attention_mask")[0]
                 position_ids = torch.clip(attention_mask.cumsum(dim=0) - 1, min=0, max=None)
+                # NOTE： maybe bug here，导致问题被裁剪掉了，从而有一些样本从始至终利用不到！
                 input_ids, attention_mask, position_ids = VF.postprocess_data(
                     input_ids=input_ids,
                     attention_mask=attention_mask,

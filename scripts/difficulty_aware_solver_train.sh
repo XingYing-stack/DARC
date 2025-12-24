@@ -1,4 +1,4 @@
-# nohup bash scripts/difficulty_aware_solver_train.sh /share_data/data1/models/Qwen/Qwen3-4B-Base /share_data/data1/fanshengda/DEvo/data/solver_1221/solver_questioner_350_train.parquet qwen3-4b-difficulty_aware_solver_1223 > /data3/workhome/fanshengda/DEvo/logs/difficulty_aware_solver_train_1223.log 2>&1 &
+# nohup bash scripts/difficulty_aware_solver_train.sh /share_data/data1/models/Qwen/Qwen3-4B-Base /share_data/data1/fanshengda/DEvo/data/solver_1221/solver_questioner_350_train.parquet qwen3-4b-difficulty_aware_solver_1224 > /data3/workhome/fanshengda/DEvo/logs/difficulty_aware_solver_train_1224.log 2>&1 &
 export STORAGE_PATH="/share_data/data1/fanshengda/DEvo/ckpts"
 export HUGGINGFACENAME="AnIdealRing"
 export HF_ENDPOINT=https://hf-mirror.com
@@ -19,6 +19,7 @@ export VLLM_DISABLE_COMPILE_CACHE=1
 
 python3 -m verl.trainer.main \
     config=examples/config.yaml \
+    data.max_prompt_length=8192 \
     data.max_response_length=4096 \
     data.shuffle=false \
     data.rollout_batch_size=128 \
@@ -27,7 +28,7 @@ python3 -m verl.trainer.main \
     worker.actor.model.model_path=$solver_model_path \
     trainer.experiment_name=${experiment_name} \
     trainer.save_checkpoint_path=${STORAGE_PATH}/models/${experiment_name}/ \
-    trainer.self_vote_ratio_use_all=false \
+    trainer.self_vote_ratio_use_all=true \
     trainer.dump_rollout_n=32 \
     trainer.dump_rollout_every=1 \
     trainer.dump_rollout_path=${STORAGE_PATH}/models/${experiment_name}/rollouts.jsonl \
@@ -40,7 +41,7 @@ python3 -m verl.trainer.main \
     data.val_prompt_key=problem \
     data.val_answer_key=answer \
     trainer.val_freq=4 \
-    trainer.save_freq=64 \
+    trainer.save_freq=32 \
     algorithm.kl_coef=0 \
     worker.rollout.n=8 \
     algorithm.norm_adv_by_std_in_grpo=false \
@@ -51,7 +52,7 @@ python3 -m verl.trainer.main \
     worker.reward.reward_function_kwargs.solver_label_mode=self_vote \
     worker.reward.reward_function_kwargs.label_prompt_key=text_prompt \
     worker.reward.reward_function_kwargs.label_vote_threshold=0.3 \
-    worker.reward.reward_function_kwargs.label_n=10 \
+    worker.reward.reward_function_kwargs.label_n=8 \
     worker.reward.reward_function_kwargs.label_temperature=1.0 \
     worker.reward.reward_function_kwargs.label_top_p=0.95
 
@@ -59,17 +60,17 @@ python3 -m verl.trainer.main \
 #echo ""merging model
 #python scripts/model_merger.py --local_dir ${STORAGE_PATH}/models/${experiment_name}/global_step_55/actor
 
-# python scripts/model_merger.py --local_dir /share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_solver_1221/global_step_192/actor/
+# python scripts/model_merger.py --local_dir /share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_solver_1223/global_step_128
 #
 #sleep 10
 #
 #echo "solver training finished"
 #
 #bash evaluation/evaluate.bash ${STORAGE_PATH}/models/${experiment_name}/global_step_15/actor/huggingface
-#bash evaluation/evaluate.bash /share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_solver_1221/global_step_192/actor/huggingface
+#bash evaluation/evaluate.bash /share_data/data1/fanshengda/DEvo/ckpts/models/qwen3-4b-difficulty_aware_solver_1223/global_step_128/actor/huggingface
 
 
 
 
 
-# python evaluation/difficulty_aware_results_recheck.py --result_path /share_data/data1/fanshengda/DEvo/ckpts/evaluation/_share_data_data1_fanshengda_DEvo_ckpts_models_qwen3-4b-difficulty_aware_solver_1221_global_step_192_actor_huggingface
+# python evaluation/difficulty_aware_results_recheck.py --result_path /share_data/data1/fanshengda/DEvo/ckpts/evaluation/_share_data_data1_fanshengda_DEvo_ckpts_models_qwen3-4b-difficulty_aware_solver_1223_global_step_64_actor_huggingface

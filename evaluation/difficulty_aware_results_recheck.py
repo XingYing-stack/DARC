@@ -19,7 +19,7 @@ args = parser.parse_args()
 #   保持硬编码不动
 # ----------------------------
 api_urls = ["https://toollearning.cn/v1"]
-api_keys = ["sk-abHpUvVt7LLnmEyxCe17021d8e774e97Bd7aA9Bc4f2b1076"]
+api_keys = ["sk-kuFDU3HN9ni5EuDj6f23Ff355a0841Fb856eC63eCd27D947"]
 
 # 提前建好 client 列表（每个 url/key 一个 client）
 clients = [

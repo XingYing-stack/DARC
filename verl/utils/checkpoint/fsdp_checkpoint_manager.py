@@ -23,6 +23,10 @@ from transformers import PreTrainedModel, PreTrainedTokenizer, ProcessorMixin
 
 from .checkpoint_manager import BaseCheckpointManager
 
+def _atomic_torch_save(obj, final_path: str):
+    tmp_path = final_path + ".tmp"
+    torch.save(obj, tmp_path)
+    os.replace(tmp_path, final_path)  # 同一文件系统内原子替换
 
 class FSDPCheckpointManager(BaseCheckpointManager):
     """
@@ -95,9 +99,9 @@ class FSDPCheckpointManager(BaseCheckpointManager):
         print(f"[rank-{self.rank}]: Saving model to {os.path.abspath(model_path)}.")
         print(f"[rank-{self.rank}]: Saving optimizer to {os.path.abspath(optim_path)}.")
         print(f"[rank-{self.rank}]: Saving extra_state to {os.path.abspath(extra_path)}.")
-        torch.save(model_state_dict, model_path)
-        torch.save(optim_state_dict, optim_path)
-        torch.save(extra_state_dict, extra_path)
+        _atomic_torch_save(model_state_dict, model_path)
+        _atomic_torch_save(optim_state_dict, optim_path)
+        _atomic_torch_save(extra_state_dict, extra_path)
 
         # wait for everyone to dump to local
         dist.barrier()

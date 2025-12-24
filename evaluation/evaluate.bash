@@ -1,5 +1,7 @@
 #!/bin/bash
 export VLLM_DISABLE_COMPILE_CACHE=1
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 model_name=$1
 
 MODEL_NAMES=(
@@ -16,8 +18,17 @@ TASKS=(
   "aime2025"
 )
 
-GPU_QUEUE=($(nvidia-smi --query-gpu=index --format=csv,noheader))
+
+if [[ -n "${CUDA_VISIBLE_DEVICES}" ]]; then
+  GPU_QUEUE=(${CUDA_VISIBLE_DEVICES//,/ })
+else
+  GPU_QUEUE=($(nvidia-smi --query-gpu=index --format=csv,noheader))
+fi
 echo "Available GPUs: ${GPU_QUEUE[@]}"
+
+
+#GPU_QUEUE=($(nvidia-smi --query-gpu=index --format=csv,noheader))
+#echo "Available GPUs: ${GPU_QUEUE[@]}"
 
 declare -A pids
 
@@ -72,10 +83,9 @@ done
 #
 #
 #
-#export CUDA_VISIBLE_DEVICES=4,5,6,7
-#python evaluation/eval_supergpqa.py --model_path $model_name
-#python evaluation/eval_bbeh.py --model_path $model_name
-#python evaluation/eval_mmlupro.py --model_path $model_name
+python evaluation/eval_supergpqa.py --model_path $model_name
+python evaluation/eval_bbeh.py --model_path $model_name
+python evaluation/eval_mmlupro.py --model_path $model_name
 
 
 echo "==> All tasks have finished!"

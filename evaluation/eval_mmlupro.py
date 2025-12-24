@@ -73,7 +73,7 @@ if __name__ == "__main__":
         args.output_file = f"outputs_mmlupro_{_model_suffix(args.model_path)}.json"
     
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    llm = LLM(model=args.model_path, tensor_parallel_size=4,gpu_memory_utilization=0.8)
+    llm = LLM(model=args.model_path, tensor_parallel_size=8,gpu_memory_utilization=0.8)
     dataset = datasets.load_dataset('TIGER-Lab/MMLU-Pro')
     
     categories = ['computer science', 'math', 'chemistry', 'engineering', 'law', 'biology',

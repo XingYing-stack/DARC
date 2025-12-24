@@ -73,7 +73,7 @@ if __name__ == "__main__":
         args.output_file = f"outputs_supergpqa_{_model_suffix(args.model_path)}.json"
     
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    llm = LLM(model=args.model_path, tensor_parallel_size=4,gpu_memory_utilization=0.8)
+    llm = LLM(model=args.model_path, tensor_parallel_size=8,gpu_memory_utilization=0.8)
     print('start loading dataset')
     dataset = datasets.load_dataset('m-a-p/SuperGPQA')
     categories = ['Engineering', 'Medicine', 'Science', 'Philosophy', 'Military Science', 'Economics', 'Management', 'Sociology', 'Literature and Arts', 'History', 'Agronomy', 'Law', 'Education']
@@ -100,9 +100,12 @@ if __name__ == "__main__":
         
         sampling_params = SamplingParams(temperature=0, top_p=1, max_tokens=8192)
         outputs = llm.generate(prompts, sampling_params)
-        
-        for entry, output in zip(category_entries, outputs):
+
+        for prompt, entry, output in zip(prompts, category_entries, outputs):
             answer = output.outputs[0].text
+
+            print(f"prompt: {prompt} answer: {answer} ")
+
             entry['solution'] = answer
             answers.append(entry)
             

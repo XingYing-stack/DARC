@@ -42,6 +42,7 @@ class DataConfig:
     train_answer_key: Optional[str] = None
     val_prompt_key: Optional[str] = None
     val_answer_key: Optional[str] = None
+    label_prompt_key: Optional[str] = None
     image_key: str = "images"
     max_prompt_length: int = 512
     max_response_length: int = 512
@@ -133,6 +134,11 @@ class PPOConfig:
         self.worker.actor.use_kl_loss = self.algorithm.use_kl_loss
         self.worker.actor.kl_penalty = self.algorithm.kl_penalty
         self.worker.actor.kl_coef = self.algorithm.kl_coef
+        if self.data.label_prompt_key is None:
+            try:
+                self.data.label_prompt_key = self.worker.reward.reward_function_kwargs.get("label_prompt_key")
+            except Exception:
+                self.data.label_prompt_key = None
 
     def deep_post_init(self):
         recursive_post_init(self)
