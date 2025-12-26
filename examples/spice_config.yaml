@@ -1,0 +1,75 @@
+ppo:
+  # Keep rollout.n=1; SPICE overrides n per generation call (challenger N, reasoner G)
+  data:
+    max_prompt_length: 4096
+    max_response_length: 2048
+    # Not used by SPICE loop; kept for tokenizer settings parity
+    train_files: ""
+    val_files: ""
+    prompt_key: "prompt"
+    answer_key: "answer"
+    shuffle: false
+    seed: 1
+    format_prompt: null
+
+  algorithm:
+    adv_estimator: grpo
+    disable_kl: true
+    use_kl_loss: false
+    norm_adv_by_std_in_grpo: false  # DrGRPO
+
+  worker:
+    actor:
+      global_batch_size: 16
+      micro_batch_size_per_device_for_update: 1
+      micro_batch_size_per_device_for_experience: 1
+      padding_free: true
+      model:
+        model_path: Qwen/Qwen3-4B-Base
+        trust_remote_code: false
+      optim:
+        lr: 1.0e-6
+    rollout:
+      n: 1
+      temperature: 1.0
+      top_p: 0.99
+      tensor_parallel_size: 1
+      gpu_memory_utilization: 0.7
+
+  trainer:
+    nnodes: 1
+    n_gpus_per_node: 4
+    project_name: spice
+    experiment_name: demo
+    logger: ["console"]
+    save_freq: -1
+    save_limit: 3
+
+spice:
+  corpus:
+    general_parquet: /share_data/data1/fanshengda/DEvo/data/general_filter1212.parquet
+    math_parquet: /share_data/data1/fanshengda/DEvo/data/math_filter1212.parquet
+    text_key: text
+    mix_math_ratio: 0.5
+    seed: 1
+
+  loop:
+    total_steps: 512
+    batch_size_b: 8
+    challenger_attempts_n: 8
+    group_size_g: 4
+    invalid_penalty_rho: -1.0
+    min_valid_tasks_per_step: 1
+    max_challenger_resample_rounds: 1
+    seed: 1
+
+  reward:
+    challenger_target_variance: 0.25
+    challenger_sigma: 0.05
+
+  prompts:
+    max_doc_chars: 8000
+    max_question_chars: 2000
+    challenger_truncation: left
+    reasoner_truncation: right
+    challenger_answer_type: integer
