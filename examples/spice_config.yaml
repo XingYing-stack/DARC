@@ -65,7 +65,7 @@ spice:
 
   reward:
     challenger_target_variance: 0.25
-    challenger_sigma: 0.05
+    challenger_sigma: 0.1
 
   prompts:
     max_doc_chars: 8000

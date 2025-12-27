@@ -162,7 +162,7 @@ class SpiceTrainer:
             raise ValueError(
                 f"actor.global_batch_size too small: global_batch_size={gb}, dp_size={dp} -> per_device={gbpd}"
             )
-        # These two updates happen every SPICE step.
+        # Challenger + reasoner updates are combined into one per SPICE step.
         c_bsz = int(loop.batch_size_b) * int(loop.group_size_g)
         # Reasoner trains on one selected question per doc, each with G samples -> ~B*G total samples.
         r_bsz = int(loop.batch_size_b) * int(loop.group_size_g)
@@ -823,32 +823,7 @@ class SpiceTrainer:
                 c_token_rewards = _outcome_rewards_to_token_rewards(chal_sel.batch["response_mask"], c_reward_t)
                 chal_sel.batch["token_level_scores"] = c_token_rewards
 
-                # Update actor on Challenger batch (DrGRPO)
-                chal_sel.meta_info["global_token_num"] = torch.sum(chal_sel.batch["attention_mask"], dim=-1).tolist()
-                with timer("old_c", timing_raw):
-                    old_lp_c = self.actor_rollout_wg.compute_log_probs(chal_sel)
-                chal_sel = chal_sel.union(old_lp_c)
-                if self.use_reference_policy:
-                    with timer("ref_c", timing_raw):
-                        ref_lp_c = self.ref_policy_wg.compute_ref_log_probs(chal_sel)
-                    chal_sel = chal_sel.union(ref_lp_c)
-                chal_sel = self._maybe_apply_kl_penalty(chal_sel, metrics, prefix="challenger")
-
-                uid_c = chal_sel.non_tensor_batch["spice_group_uid"]
-                adv_c, ret_c = core_algos.compute_grpo_outcome_advantage(
-                    token_level_rewards=chal_sel.batch["token_level_rewards"],
-                    response_mask=chal_sel.batch["response_mask"],
-                    index=uid_c,
-                    norm_adv_by_std_in_grpo=False,
-                )
-                chal_sel.batch["advantages"] = adv_c
-                chal_sel.batch["returns"] = ret_c
-                with timer("update_c", timing_raw):
-                    actor_out_c = self.actor_rollout_wg.update_actor(chal_sel)
-                actor_metrics_c = reduce_metrics(actor_out_c.non_tensor_batch)
-                metrics.update({f"challenger_update/{k}": v for k, v in actor_metrics_c.items()})
-
-                # Build + update reasoner training batch (G samples) with binary reward
+                # Build reasoner training batch (G samples) with binary reward
                 if r_train is not None:
                     r_texts = self._decode_responses(r_train.batch["responses"], r_train.batch["response_mask"])
                     correct = np.zeros((len(r_texts),), dtype=np.float32)
@@ -859,32 +834,48 @@ class SpiceTrainer:
                     r_reward_t = torch.as_tensor(correct, dtype=torch.float32)
                     r_token_rewards = _outcome_rewards_to_token_rewards(r_train.batch["response_mask"], r_reward_t)
                     r_train.batch["token_level_scores"] = r_token_rewards
-
-                    r_train.meta_info["global_token_num"] = torch.sum(r_train.batch["attention_mask"], dim=-1).tolist()
-                    with timer("old_r", timing_raw):
-                        old_lp_r = self.actor_rollout_wg.compute_log_probs(r_train)
-                    r_train = r_train.union(old_lp_r)
-                    if self.use_reference_policy:
-                        with timer("ref_r", timing_raw):
-                            ref_lp_r = self.ref_policy_wg.compute_ref_log_probs(r_train)
-                        r_train = r_train.union(ref_lp_r)
-                    r_train = self._maybe_apply_kl_penalty(r_train, metrics, prefix="reasoner")
-
-                    uid_r = r_train.non_tensor_batch["spice_group_uid"]
-                    adv_r, ret_r = core_algos.compute_grpo_outcome_advantage(
-                        token_level_rewards=r_train.batch["token_level_rewards"],
-                        response_mask=r_train.batch["response_mask"],
-                        index=uid_r,
-                        norm_adv_by_std_in_grpo=False,
-                    )
-                    r_train.batch["advantages"] = adv_r
-                    r_train.batch["returns"] = ret_r
-                    with timer("update_r", timing_raw):
-                        actor_out_r = self.actor_rollout_wg.update_actor(r_train)
-                    actor_metrics_r = reduce_metrics(actor_out_r.non_tensor_batch)
-                    metrics.update({f"reasoner_update/{k}": v for k, v in actor_metrics_r.items()})
                 else:
                     metrics["reasoner/acc_mean"] = 0.0
+
+                # Combine challenger + reasoner into a single on-policy update (DrGRPO).
+                train_batches = [chal_sel]
+                if r_train is not None:
+                    train_batches.append(r_train)
+
+                keep_keys = ["spice_group_uid"]
+                if all("multi_modal_inputs" in b.non_tensor_batch for b in train_batches):
+                    keep_keys.append("multi_modal_inputs")
+
+                def _strip_non_tensor(dp: DataProto) -> DataProto:
+                    keep = {k: dp.non_tensor_batch[k] for k in keep_keys if k in dp.non_tensor_batch}
+                    return DataProto(batch=dp.batch, non_tensor_batch=keep, meta_info=dp.meta_info)
+
+                train_batches = [_strip_non_tensor(b) for b in train_batches]
+                train = DataProto.concat(train_batches) if len(train_batches) > 1 else train_batches[0]
+
+                train.meta_info["global_token_num"] = torch.sum(train.batch["attention_mask"], dim=-1).tolist()
+                with timer("old", timing_raw):
+                    old_lp = self.actor_rollout_wg.compute_log_probs(train)
+                train = train.union(old_lp)
+                if self.use_reference_policy:
+                    with timer("ref", timing_raw):
+                        ref_lp = self.ref_policy_wg.compute_ref_log_probs(train)
+                    train = train.union(ref_lp)
+                train = self._maybe_apply_kl_penalty(train, metrics, prefix="challenger")
+
+                uid = train.non_tensor_batch["spice_group_uid"]
+                adv, ret = core_algos.compute_grpo_outcome_advantage(
+                    token_level_rewards=train.batch["token_level_rewards"],
+                    response_mask=train.batch["response_mask"],
+                    index=uid,
+                    norm_adv_by_std_in_grpo=False,
+                )
+                train.batch["advantages"] = adv
+                train.batch["returns"] = ret
+                with timer("update_c", timing_raw):
+                    actor_out = self.actor_rollout_wg.update_actor(train)
+                actor_metrics = reduce_metrics(actor_out.non_tensor_batch)
+                metrics.update({f"challenger_update/{k}": v for k, v in actor_metrics.items()})
 
                 # Checkpointing
                 if self.config_ppo.trainer.save_freq > 0 and self.global_step % self.config_ppo.trainer.save_freq == 0:
