@@ -28,6 +28,7 @@ from .config import SpiceConfig
 from .corpus import MixedCorpusSampler, ParquetTextCorpus
 from .parsing import ParsedQA, parse_challenger_output
 from .prompting import build_challenger_messages, build_reasoner_messages
+from .related import generate_relation_results
 from .verify import AnswerVerifier
 
 
@@ -505,6 +506,7 @@ class SpiceTrainer:
         for round_idx in range(loop.max_challenger_resample_rounds):
             doc_texts, sources = self.corpus.sample_batch(loop.batch_size_b)
             doc_texts = [t[: prompts_cfg.max_doc_chars] if prompts_cfg.max_doc_chars else t for t in doc_texts]
+            doc_texts_arr = np.array(doc_texts, dtype=object)
 
             # Per-doc answer type:
             # - general -> categorical (multiple choice)
@@ -542,6 +544,7 @@ class SpiceTrainer:
 
             # Attach per-sample metadata aligned with sampling_n
             n = loop.challenger_attempts_n
+            chal_out.non_tensor_batch["spice_doc_text"] = np.repeat(doc_texts_arr, repeats=n, axis=0)
             chal_out.non_tensor_batch["spice_group_uid"] = np.repeat(np.array(group_ids, dtype=object), repeats=n, axis=0)
             chal_out.non_tensor_batch["spice_doc_source"] = np.repeat(np.array(sources, dtype=object), repeats=n, axis=0)
             chal_out.non_tensor_batch["spice_answer_type"] = np.repeat(
@@ -786,6 +789,30 @@ class SpiceTrainer:
                         sigma=float(self.config_spice.reward.challenger_sigma),
                     )
                     c_rewards[valid_mask] = gauss
+                    relation_payload: List[Dict[str, str]] = []
+                    relation_indices: List[int] = []
+                    doc_texts = chal_sel.non_tensor_batch.get("spice_doc_text")
+                    questions = chal_sel.non_tensor_batch.get("spice_question")
+                    if doc_texts is not None and questions is not None:
+                        for idx in np.where(valid_mask)[0].tolist():
+                            relation_payload.append(
+                                {
+                                    "text": str(doc_texts[idx]),
+                                    "question": str(questions[idx]),
+                                }
+                            )
+                            relation_indices.append(int(idx))
+                    if relation_payload:
+                        relation_results = generate_relation_results(relation_payload)
+                        related_flags: List[bool] = []
+                        for sample_idx, rel in zip(relation_indices, relation_results):
+                            is_related = bool(rel.get("related", False))
+                            related_flags.append(is_related)
+                            if not is_related:
+                                c_rewards[sample_idx] = 0.0
+                        if related_flags:
+                            metrics["challenger/related_frac"] = float(np.mean(related_flags))
+                            metrics["challenger/unrelated_count"] = int(len(related_flags) - sum(related_flags))
 
                 metrics["challenger/reward_mean"] = float(np.mean(c_rewards))
                 metrics["challenger/reward_valid_mean"] = float(np.mean(c_rewards[valid_mask])) if np.any(valid_mask) else 0.0
