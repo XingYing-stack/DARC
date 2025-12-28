@@ -47,7 +47,28 @@ def _require_answer_type(sample: dict) -> str:
     return at
 
 
-def process_one(idx, messages, client: OpenAI, model_name: str):
+def _chat_to_prompt_fallback(chat: list[dict]) -> str:
+    """Convert chat messages to a plain-text prompt when no chat_template is available."""
+    messages = list(chat) if chat else []
+    last_role = (messages[-1].get("role") or "user").strip() if messages else ""
+    if last_role != "assistant":
+        messages.append({"role": "assistant", "content": ""})
+    lines = []
+    for msg in messages:
+        role = (msg.get("role") or "user").strip()
+        content = msg.get("content") or ""
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def _tokenizer_has_chat_template(tokenizer_path: str) -> bool:
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+    return bool(getattr(tokenizer, "chat_template", None))
+
+
+def process_one(idx, messages, client: OpenAI, model_name: str, use_chat_template: bool = True):
     """
     单条调用 openai 接口。
     messages: 必须是 chat messages 列表：[{ "role": "...", "content": "..."}, ...]
@@ -55,12 +76,21 @@ def process_one(idx, messages, client: OpenAI, model_name: str):
     """
     try:
         # 这里可以根据需要加 temperature / max_tokens 等参数
-        resp = client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-            temperature=1.0
-        )
-        content = resp.choices[0].message.content
+        if use_chat_template:
+            resp = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=1.0
+            )
+            content = resp.choices[0].message.content
+        else:
+            prompt = _chat_to_prompt_fallback(messages)
+            resp = client.completions.create(
+                model=model_name,
+                prompt=prompt,
+                temperature=1.0
+            )
+            content = resp.choices[0].text
         # 这里不解析 content，直接当作原始字符串保存
         decision = {
             "status": "ok",
@@ -386,6 +416,12 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="questioner")
     parser.add_argument("--api_key", type=str, default="dada")
     parser.add_argument("--base_url", type=str, default="http://127.0.0.1:6000/v1")
+    parser.add_argument(
+        "--tokenizer_path",
+        type=str,
+        default=None,
+        help="如果提供且没有 chat_template，则回退到纯文本 prompt。",
+    )
 
     parser.add_argument("--judge_api_key", type=str, default="sk-kuFDU3HN9ni5EuDj6f23Ff355a0841Fb856eC63eCd27D947")
     parser.add_argument("--judge_base_url", type=str, default="https://toollearning.cn/v1")
@@ -429,78 +465,81 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    use_chat_template = True
+    if args.tokenizer_path:
+        use_chat_template = _tokenizer_has_chat_template(args.tokenizer_path)
 
     # # 确保所有输出路径的父目录存在
-    # ensure_parent_dir(args.save_path)
-    # ensure_parent_dir(args.solver_save_path)
-    # ensure_parent_dir(args.dup_solver_save_path)
-    #
-    # # 初始化 client（一般线程安全，如果不放心也可以改成每线程一个 client）
-    # client = OpenAI(
-    #     api_key=args.api_key,
-    #     base_url=args.base_url,
-    # )
-    #
-    # # 读 parquet
-    # df = pd.read_parquet(args.parquet_path)
-    #
-    #
-    # # df = df.head(100)
-    # if "prompt" not in df.columns:
-    #     raise ValueError(
-    #         f"'prompt' column not found in dataframe columns: {df.columns.tolist()}"
-    #     )
-    #
-    # # 准备任务列表：每个元素是 (idx, messages)
-    # # 其中 messages 是 openai chat 格式的 list[dict]
-    # tasks = []
-    # for idx, row in df.iterrows():
-    #     prompt = row["prompt"]
-    #
-    #     # 如果 parquet 里已经是 [{'role': 'user', 'content': '...'}] 这样的列表，直接用
-    #     if isinstance(prompt, list):
-    #         messages = prompt
-    #     else:
-    #         # 否则认为是字符串，包成一条 user message
-    #         messages = [{"role": "user", "content": str(prompt)}]
-    #
-    #     tasks.append((idx, messages))
-    #
-    # results_dict = {}  # idx -> (accepted, decision)
-    #
-    # # 初始化结果列，避免有些 idx 没跑到时报错
-    # df["accepted"] = False
-    # df["decision"] = None
-    #
-    # with ThreadPoolExecutor(max_workers=args.num_workers) as executor:
-    #     futures = {
-    #         executor.submit(
-    #             process_one, idx, messages, client, args.model
-    #         ): idx
-    #         for idx, messages in tasks
-    #     }
-    #
-    #     for future in tqdm(
-    #         as_completed(futures),
-    #         total=len(futures),
-    #         desc="Querying model",
-    #     ):
-    #         idx = futures[future]
-    #         try:
-    #             _idx, accepted, decision = future.result()
-    #             results_dict[_idx] = (accepted, decision)
-    #         except Exception as e:
-    #             print(f"[ERROR] Future for idx={idx} raised exception: {e}")
-    #             results_dict[idx] = (False, {"status": "error", "raw": None})
-    #
-    # # 写回到 df
-    # for idx, (accepted, decision) in results_dict.items():
-    #     df.at[idx, "accepted"] = accepted
-    #     # 保存为 JSON 字符串，方便后续解析
-    #     df.at[idx, "decision"] = json.dumps(decision, ensure_ascii=False)
-    #
-    # df.to_parquet(args.save_path, index=False)
-    # print(f"Saved results to {args.save_path}")
+    ensure_parent_dir(args.save_path)
+    ensure_parent_dir(args.solver_save_path)
+    ensure_parent_dir(args.dup_solver_save_path)
+
+    # 初始化 client（一般线程安全，如果不放心也可以改成每线程一个 client）
+    client = OpenAI(
+        api_key=args.api_key,
+        base_url=args.base_url,
+    )
+
+    # 读 parquet
+    df = pd.read_parquet(args.parquet_path)
+
+
+    # df = df.head(100)
+    if "prompt" not in df.columns:
+        raise ValueError(
+            f"'prompt' column not found in dataframe columns: {df.columns.tolist()}"
+        )
+
+    # 准备任务列表：每个元素是 (idx, messages)
+    # 其中 messages 是 openai chat 格式的 list[dict]
+    tasks = []
+    for idx, row in df.iterrows():
+        prompt = row["prompt"]
+
+        # 如果 parquet 里已经是 [{'role': 'user', 'content': '...'}] 这样的列表，直接用
+        if isinstance(prompt, list):
+            messages = prompt
+        else:
+            # 否则认为是字符串，包成一条 user message
+            messages = [{"role": "user", "content": str(prompt)}]
+
+        tasks.append((idx, messages))
+
+    results_dict = {}  # idx -> (accepted, decision)
+
+    # 初始化结果列，避免有些 idx 没跑到时报错
+    df["accepted"] = False
+    df["decision"] = None
+
+    with ThreadPoolExecutor(max_workers=args.num_workers) as executor:
+        futures = {
+            executor.submit(
+                process_one, idx, messages, client, args.model
+            ): idx
+            for idx, messages in tasks
+        }
+
+        for future in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc="Querying model",
+        ):
+            idx = futures[future]
+            try:
+                _idx, accepted, decision = future.result()
+                results_dict[_idx] = (accepted, decision)
+            except Exception as e:
+                print(f"[ERROR] Future for idx={idx} raised exception: {e}")
+                results_dict[idx] = (False, {"status": "error", "raw": None})
+
+    # 写回到 df
+    for idx, (accepted, decision) in results_dict.items():
+        df.at[idx, "accepted"] = accepted
+        # 保存为 JSON 字符串，方便后续解析
+        df.at[idx, "decision"] = json.dumps(decision, ensure_ascii=False)
+
+    df.to_parquet(args.save_path, index=False)
+    print(f"Saved results to {args.save_path}")
     df = pd.read_parquet(args.save_path)
 
     df = df[df['accepted'] ==True]
